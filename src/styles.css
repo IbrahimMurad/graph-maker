@@ -146,5 +146,14 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
   }
+}
+
+/* dotted drafting-table background for the canvas stage */
+@utility stage-dots {
+  background-color: var(--background);
+  background-image: radial-gradient(oklch(0.75 0.03 240 / 0.45) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
