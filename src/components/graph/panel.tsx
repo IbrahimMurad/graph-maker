@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Minus, Upload, Download, RotateCcw, X, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Upload, Download, RotateCcw, X, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
 import { PALETTE, type Axis, type GraphState } from "@/lib/graph";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import type { Mutate } from "./stage";
