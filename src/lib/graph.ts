@@ -232,17 +232,18 @@ export function render(ctx: CanvasRenderingContext2D, state: GraphState, scale: 
   }
 
   /* ----- axes + arrows (both modes) ----- */
+  const axisPad = scale * 0.5;
   ctx.strokeStyle = C.axis;
   ctx.fillStyle = C.axis;
-  ctx.lineWidth = 1.6;
-  const xr = plot.x + plot.w + 14;
-  const xl = ax.min < 0 ? plot.x - 14 : plot.x;
+  ctx.lineWidth = state.axisWidth ?? 1.6;
+  const xr = plot.x + plot.w + axisPad;
+  const xl = ax.min < 0 ? plot.x - axisPad : plot.x;
   line(xl, L.xAxisY, xr, L.xAxisY);
   arrow(ctx, xr, L.xAxisY, 1, 0);
   if (ax.min < 0) arrow(ctx, xl, L.xAxisY, -1, 0);
 
-  const yt = plot.y - 14;
-  const yb = ay.min < 0 ? plot.y + plot.h + 14 : plot.y + plot.h;
+  const yt = plot.y - axisPad;
+  const yb = ay.min < 0 ? plot.y + plot.h + axisPad : plot.y + plot.h;
   line(L.yAxisX, yb, L.yAxisX, yt);
   arrow(ctx, L.yAxisX, yt, 0, -1);
   if (ay.min < 0) arrow(ctx, L.yAxisX, yb, 0, 1);
