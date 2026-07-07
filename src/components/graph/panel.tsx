@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Upload, Download, RotateCcw, X, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
-import { PALETTE, type Axis, type GraphState } from "@/lib/graph";
+import {
+  Plus,
+  Upload,
+  Download,
+  RotateCcw,
+  X,
+  Copy,
+  FileCode,
+  ClipboardCopy,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
+import { PALETTE, type Axis, type GraphState, type LineStyle, type MarkerShape } from "@/lib/graph";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import type { Mutate } from "./stage";
 
@@ -68,15 +81,28 @@ function NumberField({
   step?: string;
   onValue: (v: number) => void;
 }) {
+  // Controlled, but with a local buffer so free typing (e.g. "-", "1.") isn't clobbered,
+  // while programmatic changes (steppers, reset, load) still flow back into the field.
+  const [text, setText] = useState(String(value));
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setText(String(value));
+  }, [value]);
   return (
     <Field label={label}>
       <input
         type="number"
         className={inputCls}
-        defaultValue={value}
+        value={text}
         min={min}
         step={step ?? "any"}
+        onFocus={() => (focused.current = true)}
+        onBlur={() => {
+          focused.current = false;
+          setText(String(value));
+        }}
         onChange={(e) => {
+          setText(e.target.value);
           const v = parseFloat(e.target.value);
           if (isFinite(v)) onValue(v);
         }}
@@ -85,7 +111,8 @@ function NumberField({
   );
 }
 
-/* Min/Max row with steppers that extend the axis by one major step at either end. */
+/* Min/Max row with steppers at each end that add (outer chevron) or remove (inner chevron)
+   one major grid unit. Retract is blocked when it would collapse the axis to nothing. */
 function AxisRangeRow({
   axis,
   mutateAxis,
@@ -96,28 +123,76 @@ function AxisRangeRow({
   which: "x" | "y";
 }) {
   const isX = which === "x";
-  const MinusIcon = isX ? ChevronLeft : ChevronDown;
-  const PlusIcon = isX ? ChevronRight : ChevronUp;
+  const OutLow = isX ? ChevronLeft : ChevronDown; // grow the lower/left/bottom end (outward)
+  const InLow = isX ? ChevronRight : ChevronUp; // shrink it (inward)
+  const InHigh = isX ? ChevronLeft : ChevronDown; // shrink the upper/right/top end (inward)
+  const OutHigh = isX ? ChevronRight : ChevronUp; // grow it (outward)
+  const rr = (v: number) => Math.round(v * 1e6) / 1e6;
+  const unit = isX ? "column" : "row";
+  const low = isX ? "left (−x)" : "bottom (−y)";
+  const high = isX ? "right (+x)" : "top (+y)";
+  // Only allow removing a unit while at least one grid unit of range remains.
+  const canRetractMin = axis.step > 0 && axis.max - (axis.min + axis.step) > 1e-9;
+  const canRetractMax = axis.step > 0 && axis.max - axis.step - axis.min > 1e-9;
+  const retractCls = `${stepBtnCls} disabled:pointer-events-none disabled:opacity-40`;
   return (
     <div className="flex items-end gap-1.5">
-      <button
-        type="button"
-        title={isX ? "Extend −x by one grid column" : "Extend −y by one grid row"}
-        className={stepBtnCls}
-        onClick={() => mutateAxis((a) => void (a.min = Math.round((a.min - a.step) * 1e6) / 1e6))}
-      >
-        <MinusIcon className="h-4 w-4" />
-      </button>
-      <NumberField label="Min" value={axis.min} onValue={(v) => mutateAxis((a) => void (a.min = v))} />
-      <NumberField label="Max" value={axis.max} onValue={(v) => mutateAxis((a) => void (a.max = v))} />
-      <button
-        type="button"
-        title={isX ? "Extend +x by one grid column" : "Extend +y by one grid row"}
-        className={stepBtnCls}
-        onClick={() => mutateAxis((a) => void (a.max = Math.round((a.max + a.step) * 1e6) / 1e6))}
-      >
-        <PlusIcon className="h-4 w-4" />
-      </button>
+      <div className="flex gap-0.5 items-end">
+        <button
+          type="button"
+          title={`Add a grid ${unit} on the ${low}`}
+          className={stepBtnCls}
+          onClick={() => mutateAxis((a) => void (a.min = rr(a.min - a.step)))}
+        >
+          <OutLow className="h-4 w-4" />
+        </button>
+        <NumberField
+          label="Min"
+          value={axis.min}
+          onValue={(v) => mutateAxis((a) => void (a.min = v))}
+        />
+        <button
+          type="button"
+          title={`Remove a grid ${unit} from the ${low}`}
+          className={retractCls}
+          disabled={!canRetractMin}
+          onClick={() =>
+            mutateAxis((a) => {
+              if (a.step > 0 && a.max - (a.min + a.step) > 1e-9) a.min = rr(a.min + a.step);
+            })
+          }
+        >
+          <InLow className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex gap-0.5 items-end">
+        <button
+          type="button"
+          title={`Remove a grid ${unit} from the ${high}`}
+          className={retractCls}
+          disabled={!canRetractMax}
+          onClick={() =>
+            mutateAxis((a) => {
+              if (a.step > 0 && a.max - a.step - a.min > 1e-9) a.max = rr(a.max - a.step);
+            })
+          }
+        >
+          <InHigh className="h-4 w-4" />
+        </button>
+        <NumberField
+          label="Max"
+          value={axis.max}
+          onValue={(v) => mutateAxis((a) => void (a.max = v))}
+        />
+        <button
+          type="button"
+          title={`Add a grid ${unit} on the ${high}`}
+          className={stepBtnCls}
+          onClick={() => mutateAxis((a) => void (a.max = rr(a.max + a.step)))}
+        >
+          <OutHigh className="h-4 w-4" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -141,7 +216,11 @@ function AxisFields({
         />
       </Field>
       <AxisRangeRow axis={axis} mutateAxis={mutateAxis} which={which} />
-      <NumberField label="Major step" value={axis.step} onValue={(v) => mutateAxis((a) => void (a.step = v))} />
+      <NumberField
+        label="Major step"
+        value={axis.step}
+        onValue={(v) => mutateAxis((a) => void (a.step = v))}
+      />
       <Field label="Tick labels (blank = auto)">
         <input
           className={inputCls}
@@ -240,6 +319,23 @@ function LinesSection({ state, mutate }: { state: GraphState; mutate: Mutate }) 
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
+        <button
+          title="Duplicate the selected line"
+          onClick={() =>
+            mutate((s) => {
+              const a = s.series[s.active];
+              s.series.splice(s.active + 1, 0, {
+                ...a,
+                color: PALETTE[s.series.length % PALETTE.length],
+                points: a.points.map((p) => [p[0], p[1]] as [number, number]),
+              });
+              s.active += 1;
+            })
+          }
+          className="grid h-6 w-6 place-items-center rounded-full border border-dashed border-input text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+        >
+          <Copy className="h-3 w-3" />
+        </button>
       </div>
 
       <div className="flex gap-2">
@@ -262,6 +358,43 @@ function LinesSection({ state, mutate }: { state: GraphState; mutate: Mutate }) 
           }}
         />
       </div>
+
+      <div className="flex gap-2">
+        <Field label="Line style">
+          <select
+            className={inputCls}
+            value={active.dash ?? "solid"}
+            onChange={(e) =>
+              mutate((s) => void (s.series[s.active].dash = e.target.value as LineStyle))
+            }
+          >
+            <option value="solid">Solid</option>
+            <option value="dashed">Dashed</option>
+            <option value="dotted">Dotted</option>
+          </select>
+        </Field>
+        <Field label="Markers">
+          <select
+            className={inputCls}
+            value={active.marker ?? "none"}
+            onChange={(e) =>
+              mutate((s) => void (s.series[s.active].marker = e.target.value as MarkerShape))
+            }
+          >
+            <option value="none">None</option>
+            <option value="dot">Dot</option>
+            <option value="circle">Circle</option>
+            <option value="square">Square</option>
+            <option value="triangle">Triangle</option>
+            <option value="cross">Cross</option>
+          </select>
+        </Field>
+      </div>
+      <Check
+        label="Fill area under line"
+        checked={!!active.fill}
+        onChange={(v) => mutate((s) => void (s.series[s.active].fill = v))}
+      />
 
       <Field label={`Points — one "x, y" per line`}>
         <textarea
@@ -322,6 +455,74 @@ function CanvasSection({ state, mutate }: { state: GraphState; mutate: Mutate })
   );
 }
 
+function AnnotationsSection({ state, mutate }: { state: GraphState; mutate: Mutate }) {
+  const anns = state.annotations ?? [];
+  const round = (v: number) => Math.round(v * 1000) / 1000;
+  return (
+    <div className="space-y-2.5">
+      {anns.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No annotations yet. Add a labelled point pinned to the graph.
+        </p>
+      )}
+      {anns.map((an, i) => (
+        <div key={i} className="space-y-1.5 rounded-md border border-border p-2">
+          <div className="flex items-center gap-1.5">
+            <input
+              className={inputCls}
+              value={an.text}
+              placeholder="Label"
+              onChange={(e) => mutate((s) => void (s.annotations[i].text = e.target.value))}
+            />
+            <input
+              type="color"
+              title="Label colour"
+              className="h-8 w-8 shrink-0 cursor-pointer rounded-md border border-input bg-background p-0.5"
+              value={an.color ?? "#000000"}
+              onChange={(e) => mutate((s) => void (s.annotations[i].color = e.target.value))}
+            />
+            <button
+              title="Remove annotation"
+              onClick={() => mutate((s) => void s.annotations.splice(i, 1))}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-input text-muted-foreground transition-colors hover:border-destructive hover:bg-destructive hover:text-destructive-foreground"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="flex gap-1.5">
+            <NumberField
+              label="x"
+              value={an.x}
+              onValue={(v) => mutate((s) => void (s.annotations[i].x = v))}
+            />
+            <NumberField
+              label="y"
+              value={an.y}
+              onValue={(v) => mutate((s) => void (s.annotations[i].y = v))}
+            />
+          </div>
+        </div>
+      ))}
+      <button
+        className={btnCls}
+        onClick={() =>
+          mutate((s) => {
+            const { x: ax, y: ay } = s.axes;
+            s.annotations.push({
+              x: round((ax.min + ax.max) / 2),
+              y: round((ay.min + ay.max) / 2),
+              text: "Label",
+            });
+          })
+        }
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Add annotation
+      </button>
+    </div>
+  );
+}
+
 function ExportSection({
   exportScale,
   setExportScale,
@@ -330,6 +531,8 @@ function ExportSection({
   onSave,
   onLoad,
   onReset,
+  onExportSvg,
+  onCopyPng,
 }: {
   exportScale: number;
   setExportScale: (v: number) => void;
@@ -338,12 +541,18 @@ function ExportSection({
   onSave: () => void;
   onLoad: (file: File) => void;
   onReset: () => void;
+  onExportSvg: () => void;
+  onCopyPng: () => void;
 }) {
   return (
     <div className="space-y-2.5">
       <div className="flex items-end gap-3">
         <Field label="Scale">
-          <select className={inputCls} value={exportScale} onChange={(e) => setExportScale(parseInt(e.target.value, 10))}>
+          <select
+            className={inputCls}
+            value={exportScale}
+            onChange={(e) => setExportScale(parseInt(e.target.value, 10))}
+          >
             <option value={1}>1×</option>
             <option value={2}>2×</option>
             <option value={3}>3×</option>
@@ -353,6 +562,16 @@ function ExportSection({
         <div className="pb-2">
           <Check label="Transparent" checked={transparent} onChange={setTransparent} />
         </div>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        <button className={btnCls} onClick={onExportSvg} title="Export as SVG (vector, scalable)">
+          <FileCode className="h-3.5 w-3.5" />
+          SVG
+        </button>
+        <button className={btnCls} onClick={onCopyPng} title="Copy PNG to the clipboard">
+          <ClipboardCopy className="h-3.5 w-3.5" />
+          Copy PNG
+        </button>
       </div>
       <div className="grid grid-cols-3 gap-1.5 pt-1">
         <button className={btnCls} onClick={onSave} title="Save preset as JSON">
@@ -392,6 +611,8 @@ export interface PanelProps {
   onSave: () => void;
   onLoad: (file: File) => void;
   onReset: () => void;
+  onExportSvg: () => void;
+  onCopyPng: () => void;
   compact?: boolean;
 }
 
@@ -401,25 +622,49 @@ export function GraphPanel(props: PanelProps) {
   if (compact) {
     return (
       <Tabs defaultValue="x" className="flex h-full min-h-0 flex-col">
-        <TabsList className="mx-3 mt-2 grid h-9 shrink-0 grid-cols-5 gap-1 rounded-lg bg-muted/60 p-1">
-          <TabsTrigger value="x" className="rounded-md text-xs font-semibold">X</TabsTrigger>
-          <TabsTrigger value="y" className="rounded-md text-xs font-semibold">Y</TabsTrigger>
-          <TabsTrigger value="lines" className="rounded-md text-xs font-semibold">Lines</TabsTrigger>
-          <TabsTrigger value="canvas" className="rounded-md text-xs font-semibold">Canvas</TabsTrigger>
-          <TabsTrigger value="export" className="rounded-md text-xs font-semibold">Export</TabsTrigger>
+        <TabsList className="mx-3 mt-2 grid h-9 shrink-0 grid-cols-6 gap-1 rounded-lg bg-muted/60 p-1">
+          <TabsTrigger value="x" className="rounded-md text-xs font-semibold">
+            X
+          </TabsTrigger>
+          <TabsTrigger value="y" className="rounded-md text-xs font-semibold">
+            Y
+          </TabsTrigger>
+          <TabsTrigger value="lines" className="rounded-md text-xs font-semibold">
+            Lines
+          </TabsTrigger>
+          <TabsTrigger value="canvas" className="rounded-md text-xs font-semibold">
+            Canvas
+          </TabsTrigger>
+          <TabsTrigger value="notes" className="rounded-md text-xs font-semibold">
+            Notes
+          </TabsTrigger>
+          <TabsTrigger value="export" className="rounded-md text-xs font-semibold">
+            Export
+          </TabsTrigger>
         </TabsList>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <TabsContent value="x" className="mt-0">
-            <AxisFields axis={state.axes.x} mutateAxis={(fn) => mutate((s) => fn(s.axes.x))} which="x" />
+            <AxisFields
+              axis={state.axes.x}
+              mutateAxis={(fn) => mutate((s) => fn(s.axes.x))}
+              which="x"
+            />
           </TabsContent>
           <TabsContent value="y" className="mt-0">
-            <AxisFields axis={state.axes.y} mutateAxis={(fn) => mutate((s) => fn(s.axes.y))} which="y" />
+            <AxisFields
+              axis={state.axes.y}
+              mutateAxis={(fn) => mutate((s) => fn(s.axes.y))}
+              which="y"
+            />
           </TabsContent>
           <TabsContent value="lines" className="mt-0">
             <LinesSection state={state} mutate={mutate} />
           </TabsContent>
           <TabsContent value="canvas" className="mt-0">
             <CanvasSection state={state} mutate={mutate} />
+          </TabsContent>
+          <TabsContent value="notes" className="mt-0">
+            <AnnotationsSection state={state} mutate={mutate} />
           </TabsContent>
           <TabsContent value="export" className="mt-0">
             <ExportSection
@@ -430,6 +675,8 @@ export function GraphPanel(props: PanelProps) {
               onSave={props.onSave}
               onLoad={props.onLoad}
               onReset={props.onReset}
+              onExportSvg={props.onExportSvg}
+              onCopyPng={props.onCopyPng}
             />
           </TabsContent>
         </div>
@@ -442,11 +689,19 @@ export function GraphPanel(props: PanelProps) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <section className="border-b border-border px-4 py-4">
           <SectionHeader title="X axis" />
-          <AxisFields axis={state.axes.x} mutateAxis={(fn) => mutate((s) => fn(s.axes.x))} which="x" />
+          <AxisFields
+            axis={state.axes.x}
+            mutateAxis={(fn) => mutate((s) => fn(s.axes.x))}
+            which="x"
+          />
         </section>
         <section className="border-b border-border px-4 py-4">
           <SectionHeader title="Y axis" />
-          <AxisFields axis={state.axes.y} mutateAxis={(fn) => mutate((s) => fn(s.axes.y))} which="y" />
+          <AxisFields
+            axis={state.axes.y}
+            mutateAxis={(fn) => mutate((s) => fn(s.axes.y))}
+            which="y"
+          />
         </section>
         <section className="border-b border-border px-4 py-4">
           <SectionHeader title="Lines" />
@@ -455,6 +710,10 @@ export function GraphPanel(props: PanelProps) {
         <section className="border-b border-border px-4 py-4">
           <SectionHeader title="Canvas" />
           <CanvasSection state={state} mutate={mutate} />
+        </section>
+        <section className="border-b border-border px-4 py-4">
+          <SectionHeader title="Annotations" />
+          <AnnotationsSection state={state} mutate={mutate} />
         </section>
         <section className="border-b border-border px-4 py-4">
           <SectionHeader title="Export" />
@@ -466,6 +725,8 @@ export function GraphPanel(props: PanelProps) {
             onSave={props.onSave}
             onLoad={props.onLoad}
             onReset={props.onReset}
+            onExportSvg={props.onExportSvg}
+            onCopyPng={props.onCopyPng}
           />
         </section>
       </div>

@@ -1,11 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ImageDown, SlidersHorizontal } from "lucide-react";
-import { defaultState, layout, render, type GraphState } from "@/lib/graph";
+import { defaultState, layout, render, renderSVG, type GraphState } from "@/lib/graph";
 import { GraphPanel } from "@/components/graph/panel";
 import { GraphStage, type Mutate } from "@/components/graph/stage";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useMediaQuery } from "@/hooks/use-mobile";
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -13,22 +13,122 @@ export const Route = createFileRoute("/")({
 
 function Index() {
   const [state, setState] = useState<GraphState>(() => defaultState());
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [uiKey, setUiKey] = useState(0);
   const [exportScale, setExportScale] = useState(2);
   const [transparent, setTransparent] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const isMobile = useIsMobile();
+  // Panel is inline as a sidebar at lg (1024px); below that it lives in a sheet
+  // opened by the FAB — this must match the sidebar's `lg:block` so tablets aren't stranded.
+  const isCompact = useMediaQuery("(max-width: 1023.98px)");
 
-  const mutate: Mutate = useCallback((fn) => {
-    setState((prev) => {
-      const next = structuredClone(prev);
-      fn(next);
-      return next;
-    });
+  useEffect(() => {
+    if (!isCompact) setSheetOpen(false); // don't leave the sheet open after growing to desktop
+  }, [isCompact]);
+
+  /* ---------- undo / redo ----------
+     Edits within a short idle window (a drag, a run of keystrokes) collapse into a single
+     history entry, so undo steps by meaningful change rather than by pixel or character. */
+  const past = useRef<GraphState[]>([]);
+  const future = useRef<GraphState[]>([]);
+  const burstBase = useRef<GraphState | null>(null);
+  const burstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [, bumpHist] = useState(0);
+
+  const commitBurst = useCallback(() => {
+    if (burstTimer.current) {
+      clearTimeout(burstTimer.current);
+      burstTimer.current = null;
+    }
+    if (burstBase.current) {
+      past.current.push(burstBase.current);
+      if (past.current.length > 200) past.current.shift();
+      burstBase.current = null;
+      bumpHist((t) => t + 1);
+    }
   }, []);
 
+  const mutate: Mutate = useCallback(
+    (fn) => {
+      if (burstBase.current === null) burstBase.current = stateRef.current; // pre-edit snapshot
+      setState((prev) => {
+        const next = structuredClone(prev);
+        fn(next);
+        return next;
+      });
+      future.current = []; // a fresh edit invalidates redo
+      if (burstTimer.current) clearTimeout(burstTimer.current);
+      burstTimer.current = setTimeout(commitBurst, 500);
+      bumpHist((t) => t + 1);
+    },
+    [commitBurst],
+  );
+
+  const undo = useCallback(() => {
+    commitBurst();
+    const prevState = past.current.pop();
+    if (prevState === undefined) return;
+    future.current.push(stateRef.current);
+    setState(prevState);
+    setUiKey((k) => k + 1); // remount panel so uncontrolled fields reflect the restored state
+    bumpHist((t) => t + 1);
+  }, [commitBurst]);
+
+  const redo = useCallback(() => {
+    commitBurst();
+    const nextState = future.current.pop();
+    if (nextState === undefined) return;
+    past.current.push(stateRef.current);
+    setState(nextState);
+    setUiKey((k) => k + 1);
+    bumpHist((t) => t + 1);
+  }, [commitBurst]);
+
+  const resetHistory = useCallback(() => {
+    past.current = [];
+    future.current = [];
+    burstBase.current = null;
+    if (burstTimer.current) {
+      clearTimeout(burstTimer.current);
+      burstTimer.current = null;
+    }
+    bumpHist((t) => t + 1);
+  }, []);
+
+  const canUndo = past.current.length > 0 || burstBase.current !== null;
+  const canRedo = future.current.length > 0;
+
+  useEffect(() => () => void (burstTimer.current && clearTimeout(burstTimer.current)), []);
+
+  // Ctrl/⌘+Z undo · Ctrl/⌘+Shift+Z or Ctrl/⌘+Y redo (skipped while typing in a field).
+  useEffect(() => {
+    const isTyping = (el: Element | null) =>
+      !!el &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT" ||
+        (el as HTMLElement).isContentEditable);
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || isTyping(document.activeElement)) return;
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (k === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
   const fileName = () => {
-    const n = (state.axes.y.label + "-vs-" + state.axes.x.label).replace(/[^\w-]+/g, "").toLowerCase();
+    const n = (state.axes.y.label + "-vs-" + state.axes.x.label)
+      .replace(/[^\w-]+/g, "")
+      .toLowerCase();
     return n || "graph";
   };
 
@@ -54,8 +154,39 @@ function Index() {
     off.toBlob((b) => b && downloadBlob(b, fileName() + ".png"));
   };
 
+  const exportSvg = () => {
+    const svg = renderSVG(state, state.scale, { background: transparent ? null : "#fff" });
+    downloadBlob(new Blob([svg], { type: "image/svg+xml" }), fileName() + ".svg");
+  };
+
+  const copyPng = () => {
+    const off = document.createElement("canvas");
+    const ctx = off.getContext("2d")!;
+    const lay = layout(ctx, state, state.scale);
+    off.width = Math.round(lay.W * exportScale);
+    off.height = Math.round(lay.H * exportScale);
+    ctx.setTransform(exportScale, 0, 0, exportScale, 0, 0);
+    render(ctx, state, state.scale, {
+      showHandles: false,
+      background: transparent ? null : "#fff",
+    });
+    off.toBlob(async (blob) => {
+      if (!blob) return;
+      try {
+        if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write)
+          throw new Error("unsupported");
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      } catch {
+        alert("Couldn't copy the image — your browser may not support it. Use Export PNG instead.");
+      }
+    });
+  };
+
   const savePreset = () =>
-    downloadBlob(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }), fileName() + ".json");
+    downloadBlob(
+      new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }),
+      fileName() + ".json",
+    );
 
   const loadPreset = (file: File) => {
     file
@@ -75,8 +206,10 @@ function Index() {
         if (!(next.axisWidth > 0)) next.axisWidth = d.axisWidth;
         next.type = next.type === "relation" ? "relation" : "grid";
         if (!Array.isArray(next.series) || !next.series.length) next.series = d.series;
+        if (!Array.isArray(next.annotations)) next.annotations = [];
         next.active = Math.min(next.active | 0, next.series.length - 1);
         setState(next);
+        resetHistory();
         setUiKey((k) => k + 1);
       })
       .catch(() => alert("That doesn't look like a saved graph preset."));
@@ -84,6 +217,7 @@ function Index() {
 
   const reset = () => {
     setState(defaultState());
+    resetHistory();
     setUiKey((k) => k + 1);
   };
 
@@ -97,6 +231,8 @@ function Index() {
     onSave: savePreset,
     onLoad: loadPreset,
     onReset: reset,
+    onExportSvg: exportSvg,
+    onCopyPng: copyPng,
   };
 
   return (
@@ -105,7 +241,14 @@ function Index() {
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-4">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <svg viewBox="0 0 24 24" className="h-4.5 w-4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <svg
+              viewBox="0 0 24 24"
+              className="h-4.5 w-4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            >
               <path d="M4 4v16h16" />
               <path d="M7 15l4-6 4 3 5-8" />
             </svg>
@@ -136,10 +279,17 @@ function Index() {
 
         {/* stage */}
         <main className="relative min-h-0 flex-1">
-          <GraphStage state={state} mutate={mutate} />
+          <GraphStage
+            state={state}
+            mutate={mutate}
+            onUndo={undo}
+            onRedo={redo}
+            canUndo={canUndo}
+            canRedo={canRedo}
+          />
 
-          {/* mobile FAB → bottom sheet with tabbed panel */}
-          {isMobile && (
+          {/* compact (mobile + tablet) FAB → bottom sheet with tabbed panel */}
+          {isCompact && (
             <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
               <SheetTrigger asChild>
                 <button
@@ -152,7 +302,7 @@ function Index() {
               </SheetTrigger>
               <SheetContent
                 side="bottom"
-                className="flex h-[70dvh] flex-col rounded-t-2xl border-t bg-card p-0"
+                className="flex h-max flex-col rounded-t-2xl border-t bg-card p-0"
               >
                 <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-muted-foreground/30" />
                 <div className="min-h-0 flex-1 overflow-hidden">
