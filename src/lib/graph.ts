@@ -116,10 +116,10 @@ export function layout(ctx: CanvasRenderingContext2D, state: GraphState, scale: 
   /* Extra room so each axis extends past its grid before the arrow tip. */
   const axisPad = scale * 0.5;
 
-  const left = Math.max(yTickW + 14, ctx.measureText(ay.label).width / 2 + 8, 34);
+  const left = Math.max(yTickW + 14, ctx.measureText(ay.label).width / 2 + 8, 34) + (ax.min < 0 ? axisPad : 0);
   const top = fs + 24 + axisPad;
   const right = Math.max(ctx.measureText(ax.label).width + 32, 36) + axisPad;
-  const bottom = fs + 18;
+  const bottom = fs + 18 + (ay.min < 0 ? axisPad : 0);
 
   const spanX = Math.max(1e-9, ax.max - ax.min);
   const spanY = Math.max(1e-9, ay.max - ay.min);
