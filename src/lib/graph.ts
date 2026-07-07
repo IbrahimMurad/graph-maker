@@ -113,9 +113,12 @@ export function layout(ctx: CanvasRenderingContext2D, state: GraphState, scale: 
   let yTickW = 0;
   if (showTicks) for (const v of labelTicks(ay)) yTickW = Math.max(yTickW, ctx.measureText(String(v)).width);
 
+  /* Extra room so each axis extends past its grid before the arrow tip. */
+  const axisPad = scale * 0.5;
+
   const left = Math.max(yTickW + 14, ctx.measureText(ay.label).width / 2 + 8, 34);
-  const top = fs + 24;
-  const right = Math.max(ctx.measureText(ax.label).width + 32, 36);
+  const top = fs + 24 + axisPad;
+  const right = Math.max(ctx.measureText(ax.label).width + 32, 36) + axisPad;
   const bottom = fs + 18;
 
   const spanX = Math.max(1e-9, ax.max - ax.min);
