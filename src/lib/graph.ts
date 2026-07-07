@@ -25,6 +25,7 @@ export interface GraphState {
   showMinor: boolean;
   snap: boolean;
   fontSize: number;
+  axisWidth: number;
   series: Series[];
   active: number;
 }
@@ -74,6 +75,7 @@ export function defaultState(): GraphState {
     showMinor: true,
     snap: true,
     fontSize: 14,
+    axisWidth: 1.6,
     series: [{ color: PALETTE[0], width: 2, points: [[0, 0], [5, 20], [22, 20], [30, -12]] }],
     active: 0,
   };
@@ -111,10 +113,13 @@ export function layout(ctx: CanvasRenderingContext2D, state: GraphState, scale: 
   let yTickW = 0;
   if (showTicks) for (const v of labelTicks(ay)) yTickW = Math.max(yTickW, ctx.measureText(String(v)).width);
 
-  const left = Math.max(yTickW + 14, ctx.measureText(ay.label).width / 2 + 8, 34);
-  const top = fs + 24;
-  const right = Math.max(ctx.measureText(ax.label).width + 32, 36);
-  const bottom = fs + 18;
+  /* Extra room so each axis extends past its grid before the arrow tip. */
+  const axisPad = scale * 0.5;
+
+  const left = Math.max(yTickW + 14, ctx.measureText(ay.label).width / 2 + 8, 34) + (ax.min < 0 ? axisPad : 0);
+  const top = fs + 24 + axisPad;
+  const right = Math.max(ctx.measureText(ax.label).width + 32, 36) + axisPad;
+  const bottom = fs + 18 + (ay.min < 0 ? axisPad : 0);
 
   const spanX = Math.max(1e-9, ax.max - ax.min);
   const spanY = Math.max(1e-9, ay.max - ay.min);
@@ -227,17 +232,18 @@ export function render(ctx: CanvasRenderingContext2D, state: GraphState, scale: 
   }
 
   /* ----- axes + arrows (both modes) ----- */
+  const axisPad = scale * 0.5;
   ctx.strokeStyle = C.axis;
   ctx.fillStyle = C.axis;
-  ctx.lineWidth = 1.6;
-  const xr = plot.x + plot.w + 14;
-  const xl = ax.min < 0 ? plot.x - 14 : plot.x;
+  ctx.lineWidth = state.axisWidth ?? 1.6;
+  const xr = plot.x + plot.w + axisPad;
+  const xl = ax.min < 0 ? plot.x - axisPad : plot.x;
   line(xl, L.xAxisY, xr, L.xAxisY);
   arrow(ctx, xr, L.xAxisY, 1, 0);
   if (ax.min < 0) arrow(ctx, xl, L.xAxisY, -1, 0);
 
-  const yt = plot.y - 14;
-  const yb = ay.min < 0 ? plot.y + plot.h + 14 : plot.y + plot.h;
+  const yt = plot.y - axisPad;
+  const yb = ay.min < 0 ? plot.y + plot.h + axisPad : plot.y + plot.h;
   line(L.yAxisX, yb, L.yAxisX, yt);
   arrow(ctx, L.yAxisX, yt, 0, -1);
   if (ay.min < 0) arrow(ctx, L.yAxisX, yb, 0, 1);
