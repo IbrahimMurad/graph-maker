@@ -25,6 +25,7 @@ export interface GraphState {
   showMinor: boolean;
   snap: boolean;
   fontSize: number;
+  axisWidth: number;
   series: Series[];
   active: number;
 }
