@@ -50,7 +50,7 @@ export function GraphStage({ state, mutate }: { state: GraphState; mutate: Mutat
     return [((e.clientX - r.left) * lay.W) / r.width, ((e.clientY - r.top) * lay.H) / r.height];
   };
 
-  const hitPoint = (pos: [number, number]) => {
+  const hitPoint = (pos: [number, number]): { si: number; pi: number } | null => {
     const lay = getLayout();
     let best: { si: number; pi: number } | null = null;
     let bd = 110; // ~10 px radius, squared
@@ -64,7 +64,7 @@ export function GraphStage({ state, mutate }: { state: GraphState; mutate: Mutat
         }
       }),
     );
-    return best;
+    return best as { si: number; pi: number } | null;
   };
 
   const clampSnap = ([wx, wy]: [number, number]): [number, number] => {
