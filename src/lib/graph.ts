@@ -75,6 +75,7 @@ export function defaultState(): GraphState {
     showMinor: true,
     snap: true,
     fontSize: 14,
+    axisWidth: 1.6,
     series: [{ color: PALETTE[0], width: 2, points: [[0, 0], [5, 20], [22, 20], [30, -12]] }],
     active: 0,
   };
