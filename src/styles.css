@@ -64,7 +64,8 @@
 @theme {
   --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-display: "Sora", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --shadow-card: 0 8px 24px -10px oklch(0.45 0.09 245 / 0.28), 0 1px 3px oklch(0.45 0.09 245 / 0.08);
+  --shadow-card:
+    0 8px 24px -10px oklch(0.45 0.09 245 / 0.28), 0 1px 3px oklch(0.45 0.09 245 / 0.08);
 }
 
 :root {
