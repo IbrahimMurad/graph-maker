@@ -32,6 +32,9 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages for this repo when it has not been configured yet.
+          enablement: true
       - name: Prepare static artifact
         run: |
           mkdir -p pages-dist/assets
