@@ -161,7 +161,8 @@ export function GraphStage({
     const lay = getLayout();
     let best: { si: number; pi: number } | null = null;
     let bd = 110; // ~10 px radius, squared
-    stateRef.current.series.forEach((s, si) =>
+    stateRef.current.series.forEach((s, si) => {
+      if (s.curve) return; // generated curves have no draggable points
       s.points.forEach((pt, pi) => {
         const [qx, qy] = lay.toPx(pt[0], pt[1]);
         const d = (qx - pos[0]) ** 2 + (qy - pos[1]) ** 2;
@@ -169,8 +170,8 @@ export function GraphStage({
           bd = d;
           best = { si, pi };
         }
-      }),
-    );
+      });
+    });
     return best as { si: number; pi: number } | null;
   };
 
@@ -260,6 +261,7 @@ export function GraphStage({
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (liveTool() === "hand") return; // hand tool never edits points
+    if (stateRef.current.series[stateRef.current.active]?.curve) return; // curves aren't point-edited
     if (hitPoint(evtPos(e))) return;
     const p = clampSnap(getLayout().toWorld(...evtPos(e)), e.altKey);
     mutate((s) => {

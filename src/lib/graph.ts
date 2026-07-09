@@ -14,6 +14,26 @@ export interface Axis {
 
 export type LineStyle = "solid" | "dashed" | "dotted";
 export type MarkerShape = "none" | "dot" | "circle" | "square" | "triangle" | "cross";
+export type CurveType =
+  | "linear"
+  | "quadratic"
+  | "cubic"
+  | "sqrt"
+  | "inverse"
+  | "inverseSquare"
+  | "exp"
+  | "expDecay"
+  | "log"
+  | "sine";
+
+/* When a series carries a `curve`, its shape is generated from a relation instead of
+   freehand `points`. Linear keeps a real slope; the rest are schematic shapes that span
+   the axes so a relation diagram reads at a glance without needing real values. */
+export interface Curve {
+  type: CurveType;
+  slope?: number; // linear only (rise / run)
+  intercept?: number; // linear only
+}
 
 export interface Series {
   color: string;
@@ -22,6 +42,7 @@ export interface Series {
   dash?: LineStyle; // default "solid"
   marker?: MarkerShape; // default "none"
   fill?: boolean; // shade the area between the line and the x-axis (y = 0)
+  curve?: Curve; // when set, the series is a generated relation curve (points ignored)
 }
 
 export interface Annotation {
@@ -138,6 +159,64 @@ function labelTicks(a: Axis): number[] {
     .split(/[,;\s]+/)
     .map(Number)
     .filter((v) => isFinite(v) && v >= a.min - 1e-9 && v <= a.max + 1e-9);
+}
+
+/* ---------- relation curves ----------
+   Non-linear relations as normalized shapes s: [0,1] -> [0,1], drawn to span the plot
+   box so the recognizable shape shows without needing real values. Linear is handled
+   separately (below) so its slope stays meaningful. */
+const CURVE_SHAPES: Record<Exclude<CurveType, "linear">, (t: number) => number> = {
+  quadratic: (t) => t * t,
+  cubic: (t) => t * t * t,
+  sqrt: (t) => Math.sqrt(t),
+  inverse: (t) => {
+    const k = 0.18;
+    return (1 / (t + k) - 1 / (1 + k)) / (1 / k - 1 / (1 + k));
+  },
+  inverseSquare: (t) => {
+    const k = 0.3;
+    return (1 / (t + k) ** 2 - 1 / (1 + k) ** 2) / (1 / k ** 2 - 1 / (1 + k) ** 2);
+  },
+  exp: (t) => (Math.exp(2.6 * t) - 1) / (Math.exp(2.6) - 1),
+  expDecay: (t) => (Math.exp(-2.6 * t) - Math.exp(-2.6)) / (1 - Math.exp(-2.6)),
+  log: (t) => Math.log(1 + 12 * t) / Math.log(13),
+  sine: (t) => 0.5 + 0.5 * Math.sin(2 * Math.PI * t),
+};
+const CURVE_SAMPLES = 120;
+
+export const CURVE_TYPES: { value: CurveType; label: string }[] = [
+  { value: "linear", label: "Linear (set slope)" },
+  { value: "quadratic", label: "Square  ∝ x²" },
+  { value: "cubic", label: "Cube  ∝ x³" },
+  { value: "sqrt", label: "Square root  ∝ √x" },
+  { value: "inverse", label: "Inverse  ∝ 1/x" },
+  { value: "inverseSquare", label: "Inverse square  ∝ 1/x²" },
+  { value: "exp", label: "Exponential  ∝ eˣ" },
+  { value: "expDecay", label: "Exponential decay  ∝ e⁻ˣ" },
+  { value: "log", label: "Logarithm  ∝ ln x" },
+  { value: "sine", label: "Sine  ∝ sin x" },
+];
+
+/* The points a series actually draws with: a sampled relation curve, or freehand points. */
+function seriesPoints(s: Series, ax: Axis, ay: Axis): [number, number][] {
+  if (!s.curve) return s.points;
+  if (s.curve.type === "linear") {
+    const m = s.curve.slope ?? 1;
+    const c = s.curve.intercept ?? 0;
+    return [
+      [ax.min, m * ax.min + c],
+      [ax.max, m * ax.max + c],
+    ];
+  }
+  const shape = CURVE_SHAPES[s.curve.type];
+  const spanX = ax.max - ax.min;
+  const spanY = ay.max - ay.min;
+  const out: [number, number][] = [];
+  for (let i = 0; i <= CURVE_SAMPLES; i++) {
+    const t = i / CURVE_SAMPLES;
+    out.push([ax.min + t * spanX, ay.min + shape(t) * spanY]);
+  }
+  return out;
 }
 
 /* Margins + plot size + world<->pixel transforms. */
@@ -396,20 +475,21 @@ export function render(
   ctx.rect(plot.x - 4, plot.y - 4, plot.w + 8, plot.h + 8);
   ctx.clip();
   for (const s of state.series) {
-    if (s.points.length < 2) continue;
+    const pts = seriesPoints(s, ax, ay);
+    if (pts.length < 2) continue;
     if (s.fill) {
       const baseY = Math.min(plot.y + plot.h, Math.max(plot.y, toPx(0, 0)[1])); // the x-axis (y=0)
       ctx.save();
       ctx.globalAlpha = 0.18;
       ctx.fillStyle = s.color;
       ctx.beginPath();
-      s.points.forEach((p, i) => {
+      pts.forEach((p, i) => {
         const [px, py] = toPx(p[0], p[1]);
         if (i) ctx.lineTo(px, py);
         else ctx.moveTo(px, py);
       });
-      ctx.lineTo(toPx(s.points[s.points.length - 1][0], 0)[0], baseY);
-      ctx.lineTo(toPx(s.points[0][0], 0)[0], baseY);
+      ctx.lineTo(toPx(pts[pts.length - 1][0], 0)[0], baseY);
+      ctx.lineTo(toPx(pts[0][0], 0)[0], baseY);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
@@ -420,7 +500,7 @@ export function render(
     ctx.lineCap = "round";
     ctx.setLineDash(dashArray(s.dash, s.width));
     ctx.beginPath();
-    s.points.forEach((p, i) => {
+    pts.forEach((p, i) => {
       const [px, py] = toPx(p[0], p[1]);
       if (i) ctx.lineTo(px, py);
       else ctx.moveTo(px, py);
@@ -430,9 +510,9 @@ export function render(
   }
   ctx.restore();
 
-  /* ----- point markers (unclipped so edge markers stay whole) ----- */
+  /* ----- point markers (unclipped so edge markers stay whole; curves have no markers) ----- */
   for (const s of state.series) {
-    if (!s.marker || s.marker === "none") continue;
+    if (s.curve || !s.marker || s.marker === "none") continue;
     const r = markerRadius(s.width);
     for (const p of s.points) {
       const [px, py] = toPx(p[0], p[1]);
@@ -457,6 +537,7 @@ export function render(
   /* ----- drag handles + selected point (editor only, never exported) ----- */
   if (opts.showHandles) {
     state.series.forEach((s, si) => {
+      if (s.curve) return; // generated curves aren't point-editable
       for (const p of s.points) {
         const [px, py] = toPx(p[0], p[1]);
         ctx.beginPath();
@@ -621,14 +702,15 @@ export function renderSVG(
   );
   const dataParts: string[] = [];
   for (const s of state.series) {
-    if (s.points.length < 2) continue;
+    const cpts = seriesPoints(s, ax, ay);
+    if (cpts.length < 2) continue;
     if (s.fill) {
       const baseY = Math.min(plot.y + plot.h, Math.max(plot.y, toPx(0, 0)[1]));
-      const lastX = toPx(s.points[s.points.length - 1][0], 0)[0];
-      const firstX = toPx(s.points[0][0], 0)[0];
+      const lastX = toPx(cpts[cpts.length - 1][0], 0)[0];
+      const firstX = toPx(cpts[0][0], 0)[0];
       const d =
         "M " +
-        s.points
+        cpts
           .map((p) => {
             const [px, py] = toPx(p[0], p[1]);
             return `${f(px)} ${f(py)}`;
@@ -637,7 +719,7 @@ export function renderSVG(
         ` L ${f(lastX)} ${f(baseY)} L ${f(firstX)} ${f(baseY)} Z`;
       dataParts.push(`<path d="${d}" fill="${s.color}" fill-opacity="0.18" stroke="none"/>`);
     }
-    const pts = s.points
+    const pts = cpts
       .map((p) => {
         const [px, py] = toPx(p[0], p[1]);
         return `${f(px)},${f(py)}`;
@@ -651,9 +733,9 @@ export function renderSVG(
   }
   parts.push(`<g clip-path="url(#${clipId})">${dataParts.join("")}</g>`);
 
-  /* markers (unclipped) */
+  /* markers (unclipped; curves have no markers) */
   for (const s of state.series) {
-    if (!s.marker || s.marker === "none") continue;
+    if (s.curve || !s.marker || s.marker === "none") continue;
     const r = markerRadius(s.width);
     for (const p of s.points) {
       const [px, py] = toPx(p[0], p[1]);

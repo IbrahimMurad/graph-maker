@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ImageDown, SlidersHorizontal } from "lucide-react";
 import { defaultState, layout, render, renderSVG, type GraphState } from "@/lib/graph";
+import { zipStore } from "@/lib/zip";
 import { GraphPanel } from "@/components/graph/panel";
 import { GraphStage, type Mutate } from "@/components/graph/stage";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -125,11 +126,31 @@ function Index() {
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo]);
 
-  const fileName = () => {
-    const n = (state.axes.y.label + "-vs-" + state.axes.x.label)
-      .replace(/[^\w-]+/g, "")
-      .toLowerCase();
-    return n || "graph";
+  const fileNameFor = (st: GraphState) =>
+    (st.axes.y.label + "-vs-" + st.axes.x.label).replace(/[^\w-]+/g, "").toLowerCase() || "graph";
+  const fileName = () => fileNameFor(state);
+
+  /* Merge a parsed object onto the defaults into a valid GraphState (shared by load + batch). */
+  const hydrate = (raw: unknown): GraphState => {
+    const o = (raw || {}) as Partial<GraphState> & {
+      axes?: { x?: Partial<GraphState["axes"]["x"]>; y?: Partial<GraphState["axes"]["y"]> };
+    };
+    const d = defaultState();
+    const next: GraphState = {
+      ...d,
+      ...o,
+      axes: {
+        x: { ...d.axes.x, ...(o.axes?.x || {}) },
+        y: { ...d.axes.y, ...(o.axes?.y || {}) },
+      },
+    };
+    if (!(next.scale > 0)) next.scale = d.scale;
+    if (!(next.axisWidth > 0)) next.axisWidth = d.axisWidth;
+    next.type = next.type === "relation" ? "relation" : "grid";
+    if (!Array.isArray(next.series) || !next.series.length) next.series = d.series;
+    if (!Array.isArray(next.annotations)) next.annotations = [];
+    next.active = Math.min(next.active | 0, next.series.length - 1);
+    return next;
   };
 
   const downloadBlob = (blob: Blob, name: string) => {
@@ -192,27 +213,68 @@ function Index() {
     file
       .text()
       .then((t) => {
-        const o = JSON.parse(t);
-        const d = defaultState();
-        const next: GraphState = {
-          ...d,
-          ...o,
-          axes: {
-            x: { ...d.axes.x, ...((o.axes || {}).x || {}) },
-            y: { ...d.axes.y, ...((o.axes || {}).y || {}) },
-          },
-        };
-        if (!(next.scale > 0)) next.scale = d.scale;
-        if (!(next.axisWidth > 0)) next.axisWidth = d.axisWidth;
-        next.type = next.type === "relation" ? "relation" : "grid";
-        if (!Array.isArray(next.series) || !next.series.length) next.series = d.series;
-        if (!Array.isArray(next.annotations)) next.annotations = [];
-        next.active = Math.min(next.active | 0, next.series.length - 1);
-        setState(next);
+        setState(hydrate(JSON.parse(t)));
         resetHistory();
         setUiKey((k) => k + 1);
       })
       .catch(() => alert("That doesn't look like a saved graph preset."));
+  };
+
+  /* ---------- batch export: one JSON of many graphs -> a ZIP of PNGs ---------- */
+  const renderPngBlob = (st: GraphState): Promise<Blob | null> => {
+    const off = document.createElement("canvas");
+    const ctx = off.getContext("2d")!;
+    const lay = layout(ctx, st, st.scale);
+    off.width = Math.round(lay.W * exportScale);
+    off.height = Math.round(lay.H * exportScale);
+    ctx.setTransform(exportScale, 0, 0, exportScale, 0, 0);
+    render(ctx, st, st.scale, { showHandles: false, background: transparent ? null : "#fff" });
+    return new Promise((res) => off.toBlob(res));
+  };
+
+  const batchExport = (file: File) => {
+    file
+      .text()
+      .then(async (t) => {
+        const raw: unknown = JSON.parse(t);
+        const asRec = (v: unknown) =>
+          v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+        // Accept an array of presets, { graphs: [...] }, or a single preset.
+        const list: unknown[] = Array.isArray(raw)
+          ? raw
+          : Array.isArray(asRec(raw).graphs)
+            ? (asRec(raw).graphs as unknown[])
+            : [raw];
+        const graphs = list
+          .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
+          .map((it) => ({
+            state: hydrate(it),
+            name: typeof it.name === "string" ? it.name : undefined,
+          }));
+        if (!graphs.length) {
+          alert('No graphs found. Expected an array of presets, or { "graphs": [ ... ] }.');
+          return;
+        }
+        const sanitize = (s: string) =>
+          s.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "graph";
+        const used = new Set<string>();
+        const entries: { name: string; data: Uint8Array }[] = [];
+        for (let i = 0; i < graphs.length; i++) {
+          const blob = await renderPngBlob(graphs[i].state);
+          if (!blob) continue;
+          const base = sanitize(graphs[i].name || fileNameFor(graphs[i].state) || `graph-${i + 1}`);
+          let name = `${base}.png`;
+          for (let n = 2; used.has(name); n++) name = `${base}-${n}.png`;
+          used.add(name);
+          entries.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
+        }
+        if (!entries.length) {
+          alert("Couldn't render any graphs from that file.");
+          return;
+        }
+        downloadBlob(zipStore(entries), "graphs.zip");
+      })
+      .catch(() => alert("That file isn't valid JSON."));
   };
 
   const reset = () => {
@@ -233,6 +295,7 @@ function Index() {
     onReset: reset,
     onExportSvg: exportSvg,
     onCopyPng: copyPng,
+    onBatch: batchExport,
   };
 
   return (

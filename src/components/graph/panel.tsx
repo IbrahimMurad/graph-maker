@@ -8,12 +8,21 @@ import {
   Copy,
   FileCode,
   ClipboardCopy,
+  Layers,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   ChevronDown,
 } from "lucide-react";
-import { PALETTE, type Axis, type GraphState, type LineStyle, type MarkerShape } from "@/lib/graph";
+import {
+  PALETTE,
+  CURVE_TYPES,
+  type Axis,
+  type GraphState,
+  type LineStyle,
+  type MarkerShape,
+  type CurveType,
+} from "@/lib/graph";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import type { Mutate } from "./stage";
 
@@ -328,6 +337,7 @@ function LinesSection({ state, mutate }: { state: GraphState; mutate: Mutate }) 
                 ...a,
                 color: PALETTE[s.series.length % PALETTE.length],
                 points: a.points.map((p) => [p[0], p[1]] as [number, number]),
+                curve: a.curve ? { ...a.curve } : undefined, // own copy, not a shared ref
               });
               s.active += 1;
             })
@@ -359,6 +369,33 @@ function LinesSection({ state, mutate }: { state: GraphState; mutate: Mutate }) 
         />
       </div>
 
+      <Field label="Shape">
+        <select
+          className={inputCls}
+          value={active.curve?.type ?? "points"}
+          onChange={(e) =>
+            mutate((s) => {
+              const v = e.target.value;
+              const cur = s.series[s.active];
+              if (v === "points") delete cur.curve;
+              else
+                cur.curve = {
+                  type: v as CurveType,
+                  slope: cur.curve?.slope ?? 1,
+                  intercept: cur.curve?.intercept ?? 0,
+                };
+            })
+          }
+        >
+          <option value="points">Freehand points</option>
+          {CURVE_TYPES.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+
       <div className="flex gap-2">
         <Field label="Line style">
           <select
@@ -373,22 +410,24 @@ function LinesSection({ state, mutate }: { state: GraphState; mutate: Mutate }) 
             <option value="dotted">Dotted</option>
           </select>
         </Field>
-        <Field label="Markers">
-          <select
-            className={inputCls}
-            value={active.marker ?? "none"}
-            onChange={(e) =>
-              mutate((s) => void (s.series[s.active].marker = e.target.value as MarkerShape))
-            }
-          >
-            <option value="none">None</option>
-            <option value="dot">Dot</option>
-            <option value="circle">Circle</option>
-            <option value="square">Square</option>
-            <option value="triangle">Triangle</option>
-            <option value="cross">Cross</option>
-          </select>
-        </Field>
+        {!active.curve && (
+          <Field label="Markers">
+            <select
+              className={inputCls}
+              value={active.marker ?? "none"}
+              onChange={(e) =>
+                mutate((s) => void (s.series[s.active].marker = e.target.value as MarkerShape))
+              }
+            >
+              <option value="none">None</option>
+              <option value="dot">Dot</option>
+              <option value="circle">Circle</option>
+              <option value="square">Square</option>
+              <option value="triangle">Triangle</option>
+              <option value="cross">Cross</option>
+            </select>
+          </Field>
+        )}
       </div>
       <Check
         label="Fill area under line"
@@ -396,20 +435,58 @@ function LinesSection({ state, mutate }: { state: GraphState; mutate: Mutate }) 
         onChange={(v) => mutate((s) => void (s.series[s.active].fill = v))}
       />
 
-      <Field label={`Points — one "x, y" per line`}>
-        <textarea
-          rows={6}
-          spellCheck={false}
-          className={`${inputCls} resize-y font-mono text-xs leading-relaxed`}
-          value={pointsText}
-          onFocus={() => (focusedRef.current = true)}
-          onBlur={() => {
-            focusedRef.current = false;
-            setPointsText(serialized);
-          }}
-          onChange={(e) => onPointsChange(e.target.value)}
-        />
-      </Field>
+      {active.curve && active.curve.type === "linear" && (
+        <div className="flex gap-2">
+          <NumberField
+            key={`slope-${state.active}`}
+            label="Slope"
+            value={active.curve.slope ?? 1}
+            step="0.1"
+            onValue={(v) =>
+              mutate((s) => {
+                const c = s.series[s.active].curve;
+                if (c) c.slope = v;
+              })
+            }
+          />
+          <NumberField
+            key={`intercept-${state.active}`}
+            label="Intercept"
+            value={active.curve.intercept ?? 0}
+            step="0.5"
+            onValue={(v) =>
+              mutate((s) => {
+                const c = s.series[s.active].curve;
+                if (c) c.intercept = v;
+              })
+            }
+          />
+        </div>
+      )}
+
+      {active.curve && active.curve.type !== "linear" && (
+        <p className="text-xs leading-snug text-muted-foreground">
+          Schematic shape spanning the axes — it shows the relation, not exact values. Set the range
+          in the X/Y tabs; use a Relation diagram (Canvas tab) to hide the grid.
+        </p>
+      )}
+
+      {!active.curve && (
+        <Field label={`Points — one "x, y" per line`}>
+          <textarea
+            rows={6}
+            spellCheck={false}
+            className={`${inputCls} resize-y font-mono text-xs leading-relaxed`}
+            value={pointsText}
+            onFocus={() => (focusedRef.current = true)}
+            onBlur={() => {
+              focusedRef.current = false;
+              setPointsText(serialized);
+            }}
+            onChange={(e) => onPointsChange(e.target.value)}
+          />
+        </Field>
+      )}
     </div>
   );
 }
@@ -533,6 +610,7 @@ function ExportSection({
   onReset,
   onExportSvg,
   onCopyPng,
+  onBatch,
 }: {
   exportScale: number;
   setExportScale: (v: number) => void;
@@ -543,6 +621,7 @@ function ExportSection({
   onReset: () => void;
   onExportSvg: () => void;
   onCopyPng: () => void;
+  onBatch: (file: File) => void;
 }) {
   return (
     <div className="space-y-2.5">
@@ -573,6 +652,23 @@ function ExportSection({
           Copy PNG
         </button>
       </div>
+      <label
+        className={`${btnCls} w-full`}
+        title="Upload one JSON holding many presets and download them all as a ZIP of PNGs"
+      >
+        <Layers className="h-3.5 w-3.5" />
+        Batch export (ZIP)
+        <input
+          type="file"
+          hidden
+          accept="application/json,.json"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onBatch(f);
+            e.target.value = "";
+          }}
+        />
+      </label>
       <div className="grid grid-cols-3 gap-1.5 pt-1">
         <button className={btnCls} onClick={onSave} title="Save preset as JSON">
           <Download className="h-3.5 w-3.5" />
@@ -613,6 +709,7 @@ export interface PanelProps {
   onReset: () => void;
   onExportSvg: () => void;
   onCopyPng: () => void;
+  onBatch: (file: File) => void;
   compact?: boolean;
 }
 
@@ -677,6 +774,7 @@ export function GraphPanel(props: PanelProps) {
               onReset={props.onReset}
               onExportSvg={props.onExportSvg}
               onCopyPng={props.onCopyPng}
+              onBatch={props.onBatch}
             />
           </TabsContent>
         </div>
@@ -727,6 +825,7 @@ export function GraphPanel(props: PanelProps) {
             onReset={props.onReset}
             onExportSvg={props.onExportSvg}
             onCopyPng={props.onCopyPng}
+            onBatch={props.onBatch}
           />
         </section>
       </div>
