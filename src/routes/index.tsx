@@ -7,6 +7,7 @@ import { downloadBlob } from "@/lib/download";
 import { useDocHistory } from "@/hooks/use-history";
 import { GraphPanel } from "@/components/graph/panel";
 import { GraphStage } from "@/components/graph/stage";
+import { PageNav } from "@/components/shared/nav";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-mobile";
 
@@ -187,7 +188,7 @@ function Index() {
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       {/* header */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-4">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-4">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
             <svg
@@ -209,6 +210,7 @@ function Index() {
             </p>
           </div>
         </div>
+        <PageNav />
         <button
           onClick={exportPng}
           className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 sm:px-4"
