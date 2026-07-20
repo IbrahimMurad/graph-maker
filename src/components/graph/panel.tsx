@@ -1,19 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Plus,
-  Upload,
-  Download,
-  RotateCcw,
-  X,
-  Copy,
-  FileCode,
-  ClipboardCopy,
-  Layers,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  ChevronDown,
-} from "lucide-react";
+import { Plus, X, Copy, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
 import {
   PALETTE,
   CURVE_TYPES,
@@ -24,101 +10,17 @@ import {
   type CurveType,
 } from "@/lib/graph";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  inputCls,
+  btnCls,
+  stepBtnCls,
+  SectionHeader,
+  Field,
+  Check,
+  NumberField,
+} from "@/components/shared/fields";
+import { ExportSection } from "@/components/shared/export-section";
 import type { Mutate } from "./stage";
-
-const inputCls =
-  "w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
-const btnCls =
-  "inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-input bg-card px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:bg-muted";
-const stepBtnCls =
-  "grid h-7 w-7 shrink-0 place-items-center rounded-md border border-input bg-card text-muted-foreground transition-colors hover:border-primary hover:bg-accent hover:text-primary active:scale-95";
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <h2 className="mb-2.5 font-display text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-      {title}
-    </h2>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block min-w-0 flex-1">
-      <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function Check({
-  label,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label
-      className={`flex items-center gap-2 text-xs font-medium ${disabled ? "text-muted-foreground/50" : "text-foreground"}`}
-    >
-      <input
-        type="checkbox"
-        className="h-3.5 w-3.5 accent-primary"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      {label}
-    </label>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  min,
-  step,
-  onValue,
-}: {
-  label: string;
-  value: number;
-  min?: number;
-  step?: string;
-  onValue: (v: number) => void;
-}) {
-  // Controlled, but with a local buffer so free typing (e.g. "-", "1.") isn't clobbered,
-  // while programmatic changes (steppers, reset, load) still flow back into the field.
-  const [text, setText] = useState(String(value));
-  const focused = useRef(false);
-  useEffect(() => {
-    if (!focused.current) setText(String(value));
-  }, [value]);
-  return (
-    <Field label={label}>
-      <input
-        type="number"
-        className={inputCls}
-        value={text}
-        min={min}
-        step={step ?? "any"}
-        onFocus={() => (focused.current = true)}
-        onBlur={() => {
-          focused.current = false;
-          setText(String(value));
-        }}
-        onChange={(e) => {
-          setText(e.target.value);
-          const v = parseFloat(e.target.value);
-          if (isFinite(v)) onValue(v);
-        }}
-      />
-    </Field>
-  );
-}
 
 /* Min/Max row with steppers at each end that add (outer chevron) or remove (inner chevron)
    one major grid unit. Retract is blocked when it would collapse the axis to nothing. */
@@ -596,103 +498,6 @@ function AnnotationsSection({ state, mutate }: { state: GraphState; mutate: Muta
         <Plus className="h-3.5 w-3.5" />
         Add annotation
       </button>
-    </div>
-  );
-}
-
-function ExportSection({
-  exportScale,
-  setExportScale,
-  transparent,
-  setTransparent,
-  onSave,
-  onLoad,
-  onReset,
-  onExportSvg,
-  onCopyPng,
-  onBatch,
-}: {
-  exportScale: number;
-  setExportScale: (v: number) => void;
-  transparent: boolean;
-  setTransparent: (v: boolean) => void;
-  onSave: () => void;
-  onLoad: (file: File) => void;
-  onReset: () => void;
-  onExportSvg: () => void;
-  onCopyPng: () => void;
-  onBatch: (file: File) => void;
-}) {
-  return (
-    <div className="space-y-2.5">
-      <div className="flex items-end gap-3">
-        <Field label="Scale">
-          <select
-            className={inputCls}
-            value={exportScale}
-            onChange={(e) => setExportScale(parseInt(e.target.value, 10))}
-          >
-            <option value={1}>1×</option>
-            <option value={2}>2×</option>
-            <option value={3}>3×</option>
-            <option value={4}>4×</option>
-          </select>
-        </Field>
-        <div className="pb-2">
-          <Check label="Transparent" checked={transparent} onChange={setTransparent} />
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-1.5">
-        <button className={btnCls} onClick={onExportSvg} title="Export as SVG (vector, scalable)">
-          <FileCode className="h-3.5 w-3.5" />
-          SVG
-        </button>
-        <button className={btnCls} onClick={onCopyPng} title="Copy PNG to the clipboard">
-          <ClipboardCopy className="h-3.5 w-3.5" />
-          Copy PNG
-        </button>
-      </div>
-      <label
-        className={`${btnCls} w-full`}
-        title="Upload one JSON holding many presets and download them all as a ZIP of PNGs"
-      >
-        <Layers className="h-3.5 w-3.5" />
-        Batch export (ZIP)
-        <input
-          type="file"
-          hidden
-          accept="application/json,.json"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onBatch(f);
-            e.target.value = "";
-          }}
-        />
-      </label>
-      <div className="grid grid-cols-3 gap-1.5 pt-1">
-        <button className={btnCls} onClick={onSave} title="Save preset as JSON">
-          <Download className="h-3.5 w-3.5" />
-          Save
-        </button>
-        <label className={btnCls} title="Load a saved preset">
-          <Upload className="h-3.5 w-3.5" />
-          Load
-          <input
-            type="file"
-            hidden
-            accept="application/json,.json"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onLoad(f);
-              e.target.value = "";
-            }}
-          />
-        </label>
-        <button className={btnCls} onClick={onReset} title="Reset to defaults">
-          <RotateCcw className="h-3.5 w-3.5" />
-          Reset
-        </button>
-      </div>
     </div>
   );
 }
