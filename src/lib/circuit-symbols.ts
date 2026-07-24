@@ -495,6 +495,19 @@ export const SYMBOLS: Record<ComponentKind, SymbolSpec> = {
       o.pen.path(arrow(0.42, -0.32, 0.9, -0.8, 0.28), { width: o.lw * 0.9 });
     },
   },
+
+  terminal: {
+    kind: "terminal",
+    name: "Terminal",
+    span: 1,
+    h: 0.5,
+    pins: [[0, 0]],
+    draw: (o) => {
+      // an open connection point (A, B, …); the white fill masks the wire end beneath,
+      // so the conductor reads as stopping at the circle's edge
+      o.pen.circle(0, 0, 0.24, { fill: WHITE, width: o.lw * 1.1 });
+    },
+  },
 };
 
 /* vertical hump run for the transformer windings: along +y at fixed x.
@@ -527,6 +540,7 @@ export const PALETTE_ORDER: ComponentKind[] = [
   "solenoid",
   "loop",
   "straightWire",
+  "terminal",
 ];
 
 /* Self-contained SVG preview of a symbol for palette buttons — same draw code as the

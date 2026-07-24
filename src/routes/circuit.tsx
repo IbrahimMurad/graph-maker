@@ -117,7 +117,11 @@ function CircuitPage() {
       mutate((s) => {
         id = `c${s.seq++}`;
         let label: string | undefined;
-        if (spec.defaultLabel) {
+        if (kind === "terminal") {
+          // open terminals letter themselves: A, B, C, …
+          const n = s.components.filter((c) => c.kind === "terminal").length;
+          label = n < 26 ? String.fromCharCode(65 + n) : `T_${n + 1}`;
+        } else if (spec.defaultLabel) {
           const n =
             s.components.filter((c) => SYMBOLS[c.kind].defaultLabel === spec.defaultLabel).length +
             1;
@@ -136,6 +140,31 @@ function CircuitPage() {
         });
       });
       setSel({ kind: "comp", id });
+    },
+    [mutate],
+  );
+
+  const addNote = useCallback(() => {
+    mutate((s) => {
+      const [cx, cy] = viewCenterRef.current;
+      s.notes.push({ id: `n${s.seq++}`, x: cx, y: cy, text: "Text" });
+    });
+  }, [mutate]);
+
+  const addField = useCallback(
+    (mode: "in" | "out") => {
+      mutate((s) => {
+        const [cx, cy] = viewCenterRef.current;
+        s.fields.push({
+          id: `f${s.seq++}`,
+          x: Math.round(cx) - 4,
+          y: Math.round(cy) - 3,
+          w: 8,
+          h: 6,
+          mode,
+          spacing: 2,
+        });
+      });
     },
     [mutate],
   );
@@ -261,6 +290,8 @@ function CircuitPage() {
     sel,
     ops,
     onAdd: addComponent,
+    onAddNote: addNote,
+    onAddField: addField,
     exportScale,
     setExportScale,
     transparent,

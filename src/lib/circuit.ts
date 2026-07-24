@@ -45,7 +45,8 @@ export type ComponentKind =
   | "ground"
   | "fuse"
   | "diode"
-  | "led";
+  | "led"
+  | "terminal";
 
 export interface CircuitComponent {
   id: string;
@@ -69,11 +70,35 @@ export type Anchor =
   | { t: "pin"; comp: string; pin: number }
   | { t: "wire"; wire: string; end: WireEnd }; // invariant: target end is a chain ROOT
 
+export interface CurrentArrow {
+  t: number; // 0..1 position along the wire's arc length
+  dir: 1 | -1; // along pts order, or against it
+  label?: string; // e.g. "I" or "I_1"
+}
+
 export interface Wire {
   id: string;
   pts: [number, number][]; // world coords, length >= 2
   a: Anchor; // binding of pts[0]
   b: Anchor; // binding of pts[last]
+  arrow?: CurrentArrow; // current-direction marker drawn on the conductor
+}
+
+export interface Note {
+  id: string;
+  x: number; // world coords of the text anchor (centre)
+  y: number;
+  text: string; // "_" makes subscripts, same as labels
+}
+
+export interface FieldRegion {
+  id: string;
+  x: number; // top-left corner, world units
+  y: number;
+  w: number;
+  h: number;
+  mode: "in" | "out"; // ⊗ into the page · ⊙ out of the page
+  spacing: number; // cells between marks
 }
 
 export interface CircuitState {
@@ -84,10 +109,13 @@ export interface CircuitState {
   sheet: { w: number; h: number }; // cells
   snap: boolean;
   showGrid: boolean;
+  hops: boolean; // draw a hop where wires cross without connecting
   fontSize: number; // label px at 100% zoom
   lineWidth: number; // conductor stroke px at 100% zoom
   components: CircuitComponent[];
   wires: Wire[];
+  notes: Note[];
+  fields: FieldRegion[];
   seq: number; // id counter
 }
 
@@ -114,8 +142,11 @@ export function defaultCircuit(): CircuitState {
     sheet: { w: 48, h: 32 },
     snap: true,
     showGrid: true,
+    hops: true,
     fontSize: 15,
     lineWidth: 1.8,
+    notes: [],
+    fields: [],
     components: [
       { id: "c1", kind: "battery", x: 24, y: 22, rot: 0, cells: 2, value: "6 V" },
       { id: "c2", kind: "switch", x: 18, y: 16, rot: 90, label: "S" },
@@ -316,6 +347,97 @@ export function junctions(state: CircuitState): [number, number][] {
   return [...acc.values()].filter((e) => e.n >= 3).map((e) => [e.x, e.y]);
 }
 
+/* ---------- wire geometry: arc positions & crossings ---------- */
+
+/* Point + unit direction at arc-length fraction t (0..1) along a polyline. */
+export function wireArcPoint(w: Wire, t: number): { x: number; y: number; ux: number; uy: number } {
+  const lens: number[] = [];
+  let total = 0;
+  for (let i = 0; i < w.pts.length - 1; i++) {
+    const l = Math.hypot(w.pts[i + 1][0] - w.pts[i][0], w.pts[i + 1][1] - w.pts[i][1]);
+    lens.push(l);
+    total += l;
+  }
+  let rem = Math.min(0.999, Math.max(0.001, t)) * (total || 1);
+  for (let i = 0; i < lens.length; i++) {
+    if (rem <= lens[i] || i === lens.length - 1) {
+      const k = lens[i] === 0 ? 0 : rem / lens[i];
+      const [x1, y1] = w.pts[i];
+      const [x2, y2] = w.pts[i + 1];
+      const l = lens[i] || 1;
+      return {
+        x: x1 + (x2 - x1) * k,
+        y: y1 + (y2 - y1) * k,
+        ux: (x2 - x1) / l,
+        uy: (y2 - y1) / l,
+      };
+    }
+    rem -= lens[i];
+  }
+  return { x: w.pts[0][0], y: w.pts[0][1], ux: 1, uy: 0 };
+}
+
+/* Proper interior intersection of segments AB and CD (excludes shared endpoints). */
+function segIntersect(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+  dx: number,
+  dy: number,
+): { t: number; x: number; y: number } | null {
+  const rX = bx - ax;
+  const rY = by - ay;
+  const sX = dx - cx;
+  const sY = dy - cy;
+  const denom = rX * sY - rY * sX;
+  if (Math.abs(denom) < 1e-9) return null; // parallel
+  const t = ((cx - ax) * sY - (cy - ay) * sX) / denom;
+  const u = ((cx - ax) * rY - (cy - ay) * rX) / denom;
+  const EPS = 0.02;
+  if (t < EPS || t > 1 - EPS || u < EPS || u > 1 - EPS) return null;
+  return { t, x: ax + t * rX, y: ay + t * rY };
+}
+
+const HOP_R = 0.35; // cells
+
+/* For each wire (by index), the crossing points per segment where IT should hop —
+   the later-drawn wire hops over the earlier one, and near-endpoint crossings are
+   ignored (those are junctions/tips, not crossings). */
+function wireHopMap(state: CircuitState): Map<string, Map<number, number[]>> {
+  const map = new Map<string, Map<number, number[]>>();
+  if (!state.hops) return map;
+  const ws = state.wires;
+  for (let i = 1; i < ws.length; i++) {
+    for (let si = 0; si < ws[i].pts.length - 1; si++) {
+      const [ax, ay] = ws[i].pts[si];
+      const [bx, by] = ws[i].pts[si + 1];
+      const segLen = Math.hypot(bx - ax, by - ay);
+      if (segLen < HOP_R * 3) continue;
+      for (let j = 0; j < i; j++) {
+        for (let sj = 0; sj < ws[j].pts.length - 1; sj++) {
+          const [cx2, cy2] = ws[j].pts[sj];
+          const [dx2, dy2] = ws[j].pts[sj + 1];
+          const hit = segIntersect(ax, ay, bx, by, cx2, cy2, dx2, dy2);
+          if (!hit) continue;
+          // keep the hop fully inside the segment
+          const d = hit.t * segLen;
+          if (d < HOP_R * 1.2 || segLen - d < HOP_R * 1.2) continue;
+          let bySeg = map.get(ws[i].id);
+          if (!bySeg) map.set(ws[i].id, (bySeg = new Map()));
+          const list = bySeg.get(si) ?? [];
+          list.push(hit.t);
+          bySeg.set(si, list);
+        }
+      }
+    }
+  }
+  for (const bySeg of map.values()) for (const list of bySeg.values()) list.sort((a, b) => a - b);
+  return map;
+}
+
 /* ---------- layout ---------- */
 
 export interface ViewBox {
@@ -390,13 +512,87 @@ function drawScene(
     }
   }
 
+  // magnetic-field regions sit under the circuit: a lattice of ⊗ (into page) / ⊙ (out)
+  for (const f of state.fields) {
+    const sp = Math.max(0.75, f.spacing);
+    const r = Math.min(0.32, sp * 0.22);
+    const d = r * 0.62; // half-extent of the × strokes / dot radius
+    const marks: PathCmd[] = [];
+    for (let my = f.y + sp / 2; my <= f.y + f.h - sp * 0.25; my += sp) {
+      for (let mx = f.x + sp / 2; mx <= f.x + f.w - sp * 0.25; mx += sp) {
+        if (f.mode === "in")
+          marks.push(
+            ["M", mx - d, my - d],
+            ["L", mx + d, my + d],
+            ["M", mx - d, my + d],
+            ["L", mx + d, my - d],
+          );
+        else world.circle(mx, my, d * 0.55, { fill: INK, stroke: null });
+        world.circle(mx, my, r, { stroke: INK, width: lwz * 0.7 });
+      }
+    }
+    if (marks.length) world.path(marks, { width: lwz * 0.7, cap: "butt" });
+  }
+
+  // wires, hopping over earlier-drawn wires at genuine crossings
+  const hops = wireHopMap(state);
   for (const w of state.wires) {
-    const cmds = w.pts.map((p, i): PathCmd => (i === 0 ? ["M", p[0], p[1]] : ["L", p[0], p[1]]));
+    const bySeg = hops.get(w.id);
+    const cmds: PathCmd[] = [["M", w.pts[0][0], w.pts[0][1]]];
+    for (let i = 0; i < w.pts.length - 1; i++) {
+      const [x1, y1] = w.pts[i];
+      const [x2, y2] = w.pts[i + 1];
+      const ts = bySeg?.get(i);
+      if (ts?.length) {
+        const len = Math.hypot(x2 - x1, y2 - y1);
+        const ux = (x2 - x1) / len;
+        const uy = (y2 - y1) / len;
+        // sweep=1 bulges to the left of travel (screen coords); prefer an upward bulge
+        const leftY = -ux; // y of the left-of-travel normal (uy, -ux)
+        const sweep: 0 | 1 = leftY < 0 || (leftY === 0 && uy < 0) ? 1 : 0;
+        for (const t of ts) {
+          const hx = x1 + (x2 - x1) * t;
+          const hy = y1 + (y2 - y1) * t;
+          cmds.push(["L", hx - ux * HOP_R, hy - uy * HOP_R]);
+          cmds.push(["A", HOP_R, HOP_R, 0, 0, sweep, hx + ux * HOP_R, hy + uy * HOP_R]);
+        }
+      }
+      cmds.push(["L", x2, y2]);
+    }
     world.path(cmds, { width: lwz });
   }
 
   for (const [jx, jy] of junctions(state))
     world.circle(jx, jy, Math.max(2.6, lwz * 1.9) / lay.u, { fill: INK, stroke: null });
+
+  // current-direction arrows: an open head astride the conductor + an upright label
+  for (const w of state.wires) {
+    if (!w.arrow) continue;
+    const { x, y, ux: dux, uy: duy } = wireArcPoint(w, w.arrow.t);
+    const ux = dux * w.arrow.dir;
+    const uy = duy * w.arrow.dir;
+    const L = 0.55; // head stroke length
+    const HW = 0.34; // head half-width
+    world.path(
+      [
+        ["M", x - ux * L + -uy * HW, y - uy * L + ux * HW],
+        ["L", x, y],
+        ["L", x - ux * L - -uy * HW, y - uy * L - ux * HW],
+      ],
+      { width: lwz * 1.1 },
+    );
+    const label = w.arrow.label?.trim();
+    if (label) {
+      // put the label on the side of the wire that reads best (up / left)
+      let nx = -uy;
+      let ny = ux;
+      if (ny > 0 || (ny === 0 && nx > 0)) {
+        nx = -nx;
+        ny = -ny;
+      }
+      world.text(label, x + nx * 0.75, y + ny * 0.75, { size: fontPx, italic: true });
+    }
+  }
 
   for (const c of state.components) {
     const spec = SYMBOLS[c.kind];
@@ -425,6 +621,11 @@ function drawScene(
       if (value) world.text(value, bx, c.y + dy, { size: fontPx, align: "left" });
     }
   }
+
+  for (const n of state.notes) {
+    const text = n.text.trim();
+    if (text) world.text(text, n.x, n.y, { size: fontPx });
+  }
 }
 
 /* ---------- canvas renderer ---------- */
@@ -433,6 +634,7 @@ export interface CircuitRenderOptions {
   background?: string | null;
   showHandles?: boolean;
   selection?: Selection;
+  multi?: string[]; // marquee multi-selection (component/wire ids)
   hover?: { x: number; y: number } | null; // snap-target highlight
   viewBox?: ViewBox;
 }
@@ -453,6 +655,53 @@ export function renderCircuit(
   if (opts.showHandles) {
     const zf = lay.u / state.grid;
     const lwz = state.lineWidth * zf;
+
+    // faint outlines make field regions grabbable in the editor (never exported)
+    for (const f of state.fields) {
+      const [x0, y0] = lay.toPx(f.x, f.y);
+      const [x1, y1] = lay.toPx(f.x + f.w, f.y + f.h);
+      ctx.save();
+      ctx.strokeStyle = "rgba(100, 116, 139, 0.55)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.restore();
+    }
+
+    // marquee multi-selection boxes
+    if (opts.multi?.length) {
+      ctx.save();
+      ctx.strokeStyle = "#0071bc";
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([4, 3]);
+      for (const id of opts.multi) {
+        const c = state.components.find((x) => x.id === id);
+        if (c) {
+          const [hx, hy] = worldHalfExtents(c);
+          const [x0, y0] = lay.toPx(c.x - hx, c.y - hy);
+          const [x1, y1] = lay.toPx(c.x + hx, c.y + hy);
+          ctx.strokeRect(x0 - 4, y0 - 4, x1 - x0 + 8, y1 - y0 + 8);
+          continue;
+        }
+        const w = state.wires.find((x) => x.id === id);
+        if (w) {
+          let mnx = Infinity,
+            mny = Infinity,
+            mxx = -Infinity,
+            mxy = -Infinity;
+          for (const p of w.pts) {
+            mnx = Math.min(mnx, p[0]);
+            mny = Math.min(mny, p[1]);
+            mxx = Math.max(mxx, p[0]);
+            mxy = Math.max(mxy, p[1]);
+          }
+          const [x0, y0] = lay.toPx(mnx, mny);
+          const [x1, y1] = lay.toPx(mxx, mxy);
+          ctx.strokeRect(x0 - 4, y0 - 4, x1 - x0 + 8, y1 - y0 + 8);
+        }
+      }
+      ctx.restore();
+    }
 
     // selection highlight under the handles
     if (opts.selection) {
@@ -606,6 +855,29 @@ export function contentBounds(ctx: CanvasRenderingContext2D, state: CircuitState
       if (value) grow(bx + measure(value, false), c.y + 0.55 + textH / 2);
     }
   }
+  const measurePlain = (t: string, italic: boolean) => {
+    ctx.font = `${italic ? "italic " : ""}${state.fontSize}px ${FONT}`;
+    return ctx.measureText(t.replace(/_/g, "")).width / state.grid;
+  };
+  const noteH = (state.fontSize * 1.3) / state.grid;
+  for (const n of state.notes) {
+    const t = n.text.trim();
+    if (!t) continue;
+    const w2 = measurePlain(t, false) / 2;
+    grow(n.x - w2, n.y - noteH / 2);
+    grow(n.x + w2, n.y + noteH / 2);
+  }
+  for (const f of state.fields) {
+    grow(f.x, f.y);
+    grow(f.x + f.w, f.y + f.h);
+  }
+  for (const w of state.wires) {
+    if (!w.arrow) continue;
+    const { x, y } = wireArcPoint(w, w.arrow.t);
+    const lw2 = w.arrow.label ? measurePlain(w.arrow.label, true) : 0;
+    grow(x - 0.8 - lw2, y - 0.9 - noteH);
+    grow(x + 0.8 + lw2, y + 0.9 + noteH);
+  }
   if (!isFinite(minX)) return { x: 0, y: 0, w: state.sheet.w, h: state.sheet.h };
   const x = Math.floor(minX) - 1;
   const y = Math.floor(minY) - 1;
@@ -638,10 +910,13 @@ export function hydrateCircuit(raw: unknown): CircuitState {
     },
     snap: o.snap !== false,
     showGrid: o.showGrid !== false,
+    hops: o.hops !== false,
     fontSize: num(o.fontSize, d.fontSize, 6, 64),
     lineWidth: num(o.lineWidth, d.lineWidth, 0.5, 8),
     components: [],
     wires: [],
+    notes: [],
+    fields: [],
     seq: 1,
   };
 
@@ -696,7 +971,50 @@ export function hydrateCircuit(raw: unknown): CircuitState {
       .filter(isPt)
       .map((p): [number, number] => [r3(p[0]), r3(p[1])]);
     if (pts.length < 2) continue;
-    next.wires.push({ id: claimId(w.id, "w"), pts, a: anchor(w.a), b: anchor(w.b) });
+    const ar = (w.arrow && typeof w.arrow === "object" ? w.arrow : null) as Record<
+      string,
+      unknown
+    > | null;
+    next.wires.push({
+      id: claimId(w.id, "w"),
+      pts,
+      a: anchor(w.a),
+      b: anchor(w.b),
+      arrow: ar
+        ? {
+            t: num(ar.t, 0.5, 0.02, 0.98),
+            dir: ar.dir === -1 ? -1 : 1,
+            label: str(ar.label),
+          }
+        : undefined,
+    });
+  }
+
+  for (const rn of Array.isArray(o.notes) ? o.notes : []) {
+    if (!rn || typeof rn !== "object") continue;
+    const n = rn as Record<string, unknown>;
+    const text = str(n.text);
+    if (!text?.trim()) continue;
+    next.notes.push({
+      id: claimId(n.id, "n"),
+      x: r3(num(n.x, next.sheet.w / 2)),
+      y: r3(num(n.y, next.sheet.h / 2)),
+      text,
+    });
+  }
+
+  for (const rf of Array.isArray(o.fields) ? o.fields : []) {
+    if (!rf || typeof rf !== "object") continue;
+    const f = rf as Record<string, unknown>;
+    next.fields.push({
+      id: claimId(f.id, "f"),
+      x: r3(num(f.x, 2)),
+      y: r3(num(f.y, 2)),
+      w: num(f.w, 8, 1, 300),
+      h: num(f.h, 6, 1, 300),
+      mode: f.mode === "out" ? "out" : "in",
+      spacing: num(f.spacing, 2, 0.75, 10),
+    });
   }
 
   // anchors referencing ids that didn't survive validation resolve to free

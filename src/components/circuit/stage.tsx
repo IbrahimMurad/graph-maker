@@ -18,7 +18,7 @@ import {
   type Wire,
   type WireEnd,
 } from "@/lib/circuit";
-import { matApply, matInverse, matMul } from "@/lib/circuit-pen";
+import { FONT, matApply, matInverse, matMul } from "@/lib/circuit-pen";
 import { SYMBOLS } from "@/lib/circuit-symbols";
 import type { MutateFn } from "@/hooks/use-history";
 
@@ -36,7 +36,17 @@ type Drag =
       moved: boolean;
       pending: Anchor | null; // snap candidate to bind on release
     }
-  | { kind: "vertex"; wire: string; i: number };
+  | { kind: "vertex"; wire: string; i: number }
+  | { kind: "note"; id: string; dx: number; dy: number }
+  | { kind: "field"; id: string; dx: number; dy: number }
+  | {
+      kind: "group"; // move every marquee-selected item together
+      ids: string[];
+      startW: [number, number];
+      origComps: Map<string, [number, number]>;
+      origWires: Map<string, [number, number][]>;
+    }
+  | { kind: "marquee"; start: [number, number]; cur?: [number, number]; moved: boolean }; // canvas px
 
 const ZMIN = 0.2;
 const ZMAX = 6;
@@ -160,6 +170,13 @@ export function CircuitStage({
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const hoverRef = useRef(hover);
   hoverRef.current = hover;
+  const [multi, setMulti] = useState<string[]>([]);
+  const multiRef = useRef(multi);
+  multiRef.current = multi;
+  // live marquee rectangle, in root-relative CSS px (rendered as a div overlay)
+  const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(
+    null,
+  );
   const [readout, setReadout] = useState<{
     x: number;
     y: number;
@@ -220,6 +237,7 @@ export function CircuitStage({
       showHandles: true,
       background: null,
       selection: selRef.current,
+      multi: multiRef.current,
       hover: hoverRef.current,
     });
     updateViewCenter();
@@ -227,16 +245,23 @@ export function CircuitStage({
 
   useEffect(() => {
     draw();
-  }, [state, sel, hover, draw]);
+  }, [state, sel, hover, multi, draw]);
 
-  // Drop the selection if the entity it referred to no longer exists (undo, delete, load).
+  // Drop selections whose entities no longer exist (undo, delete, load).
   useEffect(() => {
-    if (!sel) return;
-    const exists =
-      sel.kind === "comp"
-        ? state.components.some((c) => c.id === sel.id)
-        : state.wires.some((w) => w.id === sel.id);
-    if (!exists) setSel(null);
+    if (sel) {
+      const exists =
+        sel.kind === "comp"
+          ? state.components.some((c) => c.id === sel.id)
+          : state.wires.some((w) => w.id === sel.id);
+      if (!exists) setSel(null);
+    }
+    if (multiRef.current.length) {
+      const alive = multiRef.current.filter(
+        (id) => state.components.some((c) => c.id === id) || state.wires.some((w) => w.id === id),
+      );
+      if (alive.length !== multiRef.current.length) setMulti(alive);
+    }
   }, [state, sel, setSel]);
 
   /* ---------- hit-testing (positions in canvas px) ---------- */
@@ -335,6 +360,42 @@ export function CircuitStage({
     return best;
   };
 
+  const hitNote = (pos: [number, number]): string | null => {
+    const lay = getLayout();
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return null;
+    const s = stateRef.current;
+    const zf = lay.u / s.grid;
+    ctx.font = `${s.fontSize * zf}px ${FONT}`;
+    for (let i = s.notes.length - 1; i >= 0; i--) {
+      const n = s.notes[i];
+      const [cx, cy] = lay.toPx(n.x, n.y);
+      const hw = ctx.measureText(n.text.replace(/_/g, "")).width / 2 + 5;
+      const hh = (s.fontSize * zf * 1.3) / 2 + 3;
+      if (Math.abs(pos[0] - cx) <= hw && Math.abs(pos[1] - cy) <= hh) return n.id;
+    }
+    return null;
+  };
+
+  /* field regions are grabbable on their dashed border band only, so the interior
+     stays free for selecting the circuit drawn on top of them */
+  const hitField = (pos: [number, number]): string | null => {
+    const lay = getLayout();
+    const s = stateRef.current;
+    const BAND = 7;
+    for (let i = s.fields.length - 1; i >= 0; i--) {
+      const f = s.fields[i];
+      const [x0, y0] = lay.toPx(f.x, f.y);
+      const [x1, y1] = lay.toPx(f.x + f.w, f.y + f.h);
+      const inOuter =
+        pos[0] >= x0 - BAND && pos[0] <= x1 + BAND && pos[1] >= y0 - BAND && pos[1] <= y1 + BAND;
+      const inInner =
+        pos[0] >= x0 + BAND && pos[0] <= x1 - BAND && pos[1] >= y0 + BAND && pos[1] <= y1 - BAND;
+      if (inOuter && !inInner) return f.id;
+    }
+    return null;
+  };
+
   const clampSnap = ([wx, wy]: [number, number], noSnap = false): [number, number] => {
     const s = stateRef.current;
     wx = clamp(wx, 0, s.sheet.w);
@@ -415,6 +476,42 @@ export function CircuitStage({
     }
     const pos = evtPos(e);
     const lay = getLayout();
+
+    // a press on a marquee-selected item drags the whole group together
+    if (multiRef.current.length) {
+      const b = hitBody(pos);
+      const sg = b ? null : hitSegment(pos);
+      const targetId =
+        b && multiRef.current.includes(b)
+          ? b
+          : sg && multiRef.current.includes(sg.wire.id)
+            ? sg.wire.id
+            : null;
+      if (targetId) {
+        const s = stateRef.current;
+        const ids = [...multiRef.current];
+        const origComps = new Map<string, [number, number]>();
+        const origWires = new Map<string, [number, number][]>();
+        for (const c of s.components) if (ids.includes(c.id)) origComps.set(c.id, [c.x, c.y]);
+        for (const w of s.wires)
+          if (ids.includes(w.id))
+            origWires.set(
+              w.id,
+              w.pts.map((p) => [p[0], p[1]]),
+            );
+        dragRef.current = {
+          kind: "group",
+          ids,
+          startW: lay.toWorld(pos[0], pos[1]),
+          origComps,
+          origWires,
+        };
+        canvas.setPointerCapture(e.pointerId);
+        canvas.style.cursor = "grabbing";
+        return;
+      }
+      setMulti([]); // pressing anything else dissolves the group
+    }
 
     const tip = hitTip(pos);
     if (tip) {
@@ -512,7 +609,29 @@ export function CircuitStage({
       return;
     }
 
-    setSel(null);
+    const noteId = hitNote(pos);
+    if (noteId) {
+      const n = stateRef.current.notes.find((x) => x.id === noteId)!;
+      const [wx, wy] = lay.toWorld(pos[0], pos[1]);
+      dragRef.current = { kind: "note", id: noteId, dx: wx - n.x, dy: wy - n.y };
+      canvas.setPointerCapture(e.pointerId);
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+
+    const fieldId = hitField(pos);
+    if (fieldId) {
+      const f = stateRef.current.fields.find((x) => x.id === fieldId)!;
+      const [wx, wy] = lay.toWorld(pos[0], pos[1]);
+      dragRef.current = { kind: "field", id: fieldId, dx: wx - f.x, dy: wy - f.y };
+      canvas.setPointerCapture(e.pointerId);
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+
+    // empty space: begin a marquee — a plain click (no movement) clears the selection
+    dragRef.current = { kind: "marquee", start: pos, moved: false };
+    canvas.setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -555,6 +674,73 @@ export function CircuitStage({
         if (w && d.i > 0 && d.i < w.pts.length - 1) w.pts[d.i] = p;
       });
       showReadout(p[0], p[1]);
+      return;
+    }
+
+    if (d?.kind === "note" || d?.kind === "field") {
+      const [wx, wy] = lay.toWorld(pos[0], pos[1]);
+      const [nx, ny] = clampSnap([wx - d.dx, wy - d.dy], e.altKey);
+      mutateRef.current((s) => {
+        if (d.kind === "note") {
+          const n = s.notes.find((x) => x.id === d.id);
+          if (n) {
+            n.x = nx;
+            n.y = ny;
+          }
+        } else {
+          const f = s.fields.find((x) => x.id === d.id);
+          if (f) {
+            f.x = nx;
+            f.y = ny;
+          }
+        }
+      });
+      showReadout(nx, ny);
+      return;
+    }
+
+    if (d?.kind === "group") {
+      const [wx, wy] = lay.toWorld(pos[0], pos[1]);
+      let dx = wx - d.startW[0];
+      let dy = wy - d.startW[1];
+      if (stateRef.current.snap && !e.altKey) {
+        dx = Math.round(dx / GRID_SNAP) * GRID_SNAP;
+        dy = Math.round(dy / GRID_SNAP) * GRID_SNAP;
+      }
+      dx = r3(dx);
+      dy = r3(dy);
+      mutateRef.current((s) => {
+        for (const c of s.components) {
+          const o = d.origComps.get(c.id);
+          if (o) {
+            c.x = r3(clamp(o[0] + dx, 0, s.sheet.w));
+            c.y = r3(clamp(o[1] + dy, 0, s.sheet.h));
+          }
+        }
+        for (const w of s.wires) {
+          const o = d.origWires.get(w.id);
+          if (o) w.pts = o.map((p) => [r3(p[0] + dx), r3(p[1] + dy)]);
+        }
+      });
+      return;
+    }
+
+    if (d?.kind === "marquee") {
+      d.moved = true;
+      d.cur = pos;
+      const root = rootRef.current;
+      const cr = canvasRef.current!.getBoundingClientRect();
+      if (root) {
+        const rr = root.getBoundingClientRect();
+        const x1 = cr.left - rr.left + Math.min(d.start[0], pos[0]);
+        const y1 = cr.top - rr.top + Math.min(d.start[1], pos[1]);
+        setMarquee({
+          l: x1,
+          t: y1,
+          w: Math.abs(pos[0] - d.start[0]),
+          h: Math.abs(pos[1] - d.start[1]),
+        });
+      }
       return;
     }
 
@@ -607,6 +793,39 @@ export function CircuitStage({
 
   const endDrag = () => {
     const d = dragRef.current;
+    if (d?.kind === "marquee") {
+      if (!d.moved || !d.cur) {
+        setSel(null);
+        setMulti([]);
+      } else {
+        const lay = getLayout();
+        const [ax, ay] = lay.toWorld(d.start[0], d.start[1]);
+        const [bx, by] = lay.toWorld(d.cur[0], d.cur[1]);
+        const x0 = Math.min(ax, bx);
+        const y0 = Math.min(ay, by);
+        const x1 = Math.max(ax, bx);
+        const y1 = Math.max(ay, by);
+        const s = stateRef.current;
+        const ids: string[] = [];
+        for (const c of s.components)
+          if (c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1) ids.push(c.id);
+        for (const w of s.wires)
+          if (w.pts.some((p) => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1))
+            ids.push(w.id);
+        if (ids.length === 1) {
+          setSel(
+            s.components.some((c) => c.id === ids[0])
+              ? { kind: "comp", id: ids[0] }
+              : { kind: "wire", id: ids[0] },
+          );
+          setMulti([]);
+        } else {
+          setMulti(ids);
+          setSel(null);
+        }
+      }
+      setMarquee(null);
+    }
     if (d?.kind === "tip") {
       const s = stateRef.current;
       if (d.spawned && !d.moved) {
@@ -640,6 +859,7 @@ export function CircuitStage({
     dragRef.current = null;
     setHover(null);
     setReadout(null);
+    setMarquee(null);
     if (canvasRef.current) canvasRef.current.style.cursor = restingCursor();
   };
 
@@ -758,6 +978,7 @@ export function CircuitStage({
       if (isTyping(document.activeElement)) return;
       if (e.key === "Escape") {
         cancelDrag();
+        setMulti([]);
         return;
       }
       if (e.ctrlKey || e.metaKey) {
@@ -781,7 +1002,16 @@ export function CircuitStage({
       } else if (e.key === "r" || e.key === "R") {
         opsRef.current.rotateSel(e.shiftKey ? -1 : 1);
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (selRef.current) {
+        if (multiRef.current.length) {
+          e.preventDefault();
+          const ids = [...multiRef.current];
+          mutateRef.current((st) => {
+            for (const id of ids) unbindFrom(st, id);
+            st.components = st.components.filter((c) => !ids.includes(c.id));
+            st.wires = st.wires.filter((w) => !ids.includes(w.id));
+          });
+          setMulti([]);
+        } else if (selRef.current) {
           e.preventDefault();
           opsRef.current.deleteSel();
         }
@@ -1011,6 +1241,13 @@ export function CircuitStage({
         </div>
       )}
 
+      {marquee && (
+        <div
+          className="pointer-events-none absolute z-10 rounded-sm border border-primary/70 bg-primary/10"
+          style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }}
+        />
+      )}
+
       {readout && (
         <div
           className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full rounded-md bg-foreground/90 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-background shadow"
@@ -1022,8 +1259,8 @@ export function CircuitStage({
 
       <p className="pointer-events-none absolute bottom-4 left-4 hidden max-w-60 text-[11px] leading-relaxed text-muted-foreground lg:block">
         Drag parts · drag a pin to pull a wire · drag wire ends onto pins to connect · press a wire
-        to bend it · Shift-drag a tip to chain · right-click deletes · double-click toggles
-        switch/lamp · R rotates · Alt bypasses snap · Space pans
+        to bend it · Shift-drag a tip to chain · drag empty space to select many · right-click
+        deletes · double-click toggles switch/lamp · R rotates · Alt bypasses snap · Space pans
       </p>
     </div>
   );
