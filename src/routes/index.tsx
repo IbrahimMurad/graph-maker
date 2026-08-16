@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ImageDown, SlidersHorizontal } from "lucide-react";
 import { defaultState, layout, render, renderSVG, type GraphState } from "@/lib/graph";
 import { zipStore } from "@/lib/zip";
+import { downloadBlob } from "@/lib/download";
+import { useDocHistory } from "@/hooks/use-history";
 import { GraphPanel } from "@/components/graph/panel";
-import { GraphStage, type Mutate } from "@/components/graph/stage";
+import { GraphStage } from "@/components/graph/stage";
+import { PageNav } from "@/components/shared/nav";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-mobile";
 
@@ -13,10 +16,8 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const [state, setState] = useState<GraphState>(() => defaultState());
-  const stateRef = useRef(state);
-  stateRef.current = state;
-  const [uiKey, setUiKey] = useState(0);
+  const { state, mutate, undo, redo, canUndo, canRedo, replace, uiKey } =
+    useDocHistory<GraphState>(defaultState);
   const [exportScale, setExportScale] = useState(2);
   const [transparent, setTransparent] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -27,104 +28,6 @@ function Index() {
   useEffect(() => {
     if (!isCompact) setSheetOpen(false); // don't leave the sheet open after growing to desktop
   }, [isCompact]);
-
-  /* ---------- undo / redo ----------
-     Edits within a short idle window (a drag, a run of keystrokes) collapse into a single
-     history entry, so undo steps by meaningful change rather than by pixel or character. */
-  const past = useRef<GraphState[]>([]);
-  const future = useRef<GraphState[]>([]);
-  const burstBase = useRef<GraphState | null>(null);
-  const burstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [, bumpHist] = useState(0);
-
-  const commitBurst = useCallback(() => {
-    if (burstTimer.current) {
-      clearTimeout(burstTimer.current);
-      burstTimer.current = null;
-    }
-    if (burstBase.current) {
-      past.current.push(burstBase.current);
-      if (past.current.length > 200) past.current.shift();
-      burstBase.current = null;
-      bumpHist((t) => t + 1);
-    }
-  }, []);
-
-  const mutate: Mutate = useCallback(
-    (fn) => {
-      if (burstBase.current === null) burstBase.current = stateRef.current; // pre-edit snapshot
-      setState((prev) => {
-        const next = structuredClone(prev);
-        fn(next);
-        return next;
-      });
-      future.current = []; // a fresh edit invalidates redo
-      if (burstTimer.current) clearTimeout(burstTimer.current);
-      burstTimer.current = setTimeout(commitBurst, 500);
-      bumpHist((t) => t + 1);
-    },
-    [commitBurst],
-  );
-
-  const undo = useCallback(() => {
-    commitBurst();
-    const prevState = past.current.pop();
-    if (prevState === undefined) return;
-    future.current.push(stateRef.current);
-    setState(prevState);
-    setUiKey((k) => k + 1); // remount panel so uncontrolled fields reflect the restored state
-    bumpHist((t) => t + 1);
-  }, [commitBurst]);
-
-  const redo = useCallback(() => {
-    commitBurst();
-    const nextState = future.current.pop();
-    if (nextState === undefined) return;
-    past.current.push(stateRef.current);
-    setState(nextState);
-    setUiKey((k) => k + 1);
-    bumpHist((t) => t + 1);
-  }, [commitBurst]);
-
-  const resetHistory = useCallback(() => {
-    past.current = [];
-    future.current = [];
-    burstBase.current = null;
-    if (burstTimer.current) {
-      clearTimeout(burstTimer.current);
-      burstTimer.current = null;
-    }
-    bumpHist((t) => t + 1);
-  }, []);
-
-  const canUndo = past.current.length > 0 || burstBase.current !== null;
-  const canRedo = future.current.length > 0;
-
-  useEffect(() => () => void (burstTimer.current && clearTimeout(burstTimer.current)), []);
-
-  // Ctrl/⌘+Z undo · Ctrl/⌘+Shift+Z or Ctrl/⌘+Y redo (skipped while typing in a field).
-  useEffect(() => {
-    const isTyping = (el: Element | null) =>
-      !!el &&
-      (el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        el.tagName === "SELECT" ||
-        (el as HTMLElement).isContentEditable);
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || isTyping(document.activeElement)) return;
-      const k = e.key.toLowerCase();
-      if (k === "z") {
-        e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
-      } else if (k === "y") {
-        e.preventDefault();
-        redo();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo]);
 
   const fileNameFor = (st: GraphState) =>
     (st.axes.y.label + "-vs-" + st.axes.x.label).replace(/[^\w-]+/g, "").toLowerCase() || "graph";
@@ -151,14 +54,6 @@ function Index() {
     if (!Array.isArray(next.annotations)) next.annotations = [];
     next.active = Math.min(next.active | 0, next.series.length - 1);
     return next;
-  };
-
-  const downloadBlob = (blob: Blob, name: string) => {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   };
 
   const exportPng = () => {
@@ -212,11 +107,7 @@ function Index() {
   const loadPreset = (file: File) => {
     file
       .text()
-      .then((t) => {
-        setState(hydrate(JSON.parse(t)));
-        resetHistory();
-        setUiKey((k) => k + 1);
-      })
+      .then((t) => replace(hydrate(JSON.parse(t))))
       .catch(() => alert("That doesn't look like a saved graph preset."));
   };
 
@@ -277,11 +168,7 @@ function Index() {
       .catch(() => alert("That file isn't valid JSON."));
   };
 
-  const reset = () => {
-    setState(defaultState());
-    resetHistory();
-    setUiKey((k) => k + 1);
-  };
+  const reset = () => replace(defaultState());
 
   const panelProps = {
     state,
@@ -301,7 +188,7 @@ function Index() {
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       {/* header */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-4">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-4">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
             <svg
@@ -323,6 +210,7 @@ function Index() {
             </p>
           </div>
         </div>
+        <PageNav />
         <button
           onClick={exportPng}
           className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 sm:px-4"
